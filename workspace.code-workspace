@@ -3,6 +3,10 @@
 		{
 			"name": "Filter_Controller",
 			"path": "."
+		},
+		{
+			"name": "smps",
+			"path": "..\\smps"
 		}
 	],
 	"settings": {}

@@ -78,6 +78,7 @@ extern const char GSLC_PMEM ERRSTR_PXD_NULL[];
 // Initialize any internal state upon reset
 void gslc_ElemXKeyPadReset_Alpha(void* pvConfig)
 {
+  (void)pvConfig; // Unused
   //gslc_tsXKeyPadCfg* pConfig = (gslc_tsXKeyPadCfg*)pvConfig;
   //gslc_tsXKeyPadCfg_Alpha* pConfigAlpha = (gslc_tsXKeyPadCfg_Alpha*)pConfig; // Retrieve the variant config
 
@@ -89,6 +90,7 @@ void gslc_ElemXKeyPadReset_Alpha(void* pvConfig)
 // Initialize any internal state when the text field is first assigned
 void gslc_ElemXKeyPadTxtInit_Alpha(void* pvKeyPad)
 {
+  (void)pvKeyPad; // Unused
   //gslc_tsXKeyPad* pKeyPad = (gslc_tsXKeyPad*)pvKeyPad;
   //gslc_tsXKeyPadCfg* pConfig = pKeyPad->pConfig;
   //gslc_tsXKeyPadCfg_Alpha* pConfigAlpha = (gslc_tsXKeyPadCfg_Alpha*)pConfig; // Retrieve the variant config
@@ -112,7 +114,7 @@ void gslc_ElemXKeyPadLabelGet_Alpha(void* pvKeyPad,uint8_t nId,uint8_t nStrMax,c
   int8_t eLayoutSel = pKeyPad->pConfig->eLayoutSel;
 
   if (DEBUG_XKEYPAD) GSLC_DEBUG_PRINT("XKeyPadLabelGet_Alpha: ID=%d Ind=%d\n",nId,nInd);
-  if (nInd == -1) {
+  if (nInd == GSLC_IND_NONE) {
     GSLC_DEBUG2_PRINT("ERROR: LabelGet_Alpha\n","");
     // Should never get here
   } else {
@@ -137,7 +139,8 @@ void gslc_ElemXKeyPadLabelGet_Alpha(void* pvKeyPad,uint8_t nId,uint8_t nStrMax,c
         gslc_StrCopy(pStr,KEYPAD_SPECIAL_SELECT[(eLayoutSel+1) % E_XKEYPAD_SET__MAX],nStrMax);
       } else {
         // Static content
-        gslc_StrCopy(pStr,KEYPAD_SPECIAL_LABEL[nInd],nStrMax);
+        int16_t nIndSpecial = gslc_XKeyPadLookupSpecialId(KEYPAD_SPECIAL_LABEL, nId);
+        gslc_StrCopy(pStr,KEYPAD_SPECIAL_LABEL[nIndSpecial].pLabel,nStrMax);
       }
     } else {
       gslc_StrCopy(pStr,"",nStrMax);
@@ -148,6 +151,7 @@ void gslc_ElemXKeyPadLabelGet_Alpha(void* pvKeyPad,uint8_t nId,uint8_t nStrMax,c
 // Return the style for a button
 void gslc_ElemXKeyPadStyleGet_Alpha(void* pvKeyPad,uint8_t nId, bool* pbVisible, gslc_tsColor* pcolTxt, gslc_tsColor* pcolFrame, gslc_tsColor* pcolFill, gslc_tsColor* pcolGlow)
 {
+  (void)pvKeyPad; // Unused
   //gslc_tsXKeyPad* pKeyPad = (gslc_tsXKeyPad*)pvKeyPad;
   //gslc_tsXKeyPadCfg_Alpha* pConfigAlpha = (gslc_tsXKeyPadCfg_Alpha*)pKeyPad->pConfig; // Retrieve variant config
 
@@ -203,9 +207,6 @@ void gslc_ElemXKeyPadBtnEvt_Alpha(void* pvKeyPad,uint8_t nId,gslc_tsXKeyPadResul
   bool bLayoutChg;
   bool bRet;
 
-  psResult->eRedrawState = XKEYPAD_REDRAW_NONE; // Default to no redraw needed
-  psResult->nRedrawKeyId = -1;
-
   if (pKeys[nInd].nType == E_XKEYPAD_TYPE_UNUSED) {
     // Ignore
   } else if (pKeys[nInd].nType == E_XKEYPAD_TYPE_BASIC) {
@@ -213,7 +214,7 @@ void gslc_ElemXKeyPadBtnEvt_Alpha(void* pvKeyPad,uint8_t nId,gslc_tsXKeyPadResul
     char  acStr[XKEYPAD_LABEL_MAX];
     gslc_ElemXKeyPadLabelGet_Alpha(pvKeyPad,nId,XKEYPAD_LABEL_MAX,acStr);
     bRet = gslc_XKeyPadTxtAddStr(pKeyPad,acStr,pKeyPad->nCursorPos);
-    if (bRet) psResult->eRedrawState = psResult->eRedrawState | XKEYPAD_REDRAW_TXT;
+    if (bRet) gslc_XKeyPadPendRedrawAddTxt(psResult);
     return;
 
   } else {
@@ -221,13 +222,13 @@ void gslc_ElemXKeyPadBtnEvt_Alpha(void* pvKeyPad,uint8_t nId,gslc_tsXKeyPadResul
     if (nId == KEYPAD_ID_BACKSPACE) {
       if (DEBUG_XKEYPAD) GSLC_DEBUG_PRINT("BtnEvt_Alpha: Key=BS\n", "");
       bRet = gslc_XKeyPadTxtDelCh(pKeyPad,pKeyPad->nCursorPos);
-      if (bRet) psResult->eRedrawState = psResult->eRedrawState | XKEYPAD_REDRAW_TXT;
+      if (bRet) gslc_XKeyPadPendRedrawAddTxt(psResult);
       return;
 
     } else if (nId == KEYPAD_ID_SPACE) {
       if (DEBUG_XKEYPAD) GSLC_DEBUG_PRINT("BtnEvt_Alpha: Key=SPACE\n", "");
       bRet = gslc_XKeyPadTxtAddStr(pKeyPad,XKEYPAD_LABEL_SPACE,pKeyPad->nCursorPos);
-      if (bRet) psResult->eRedrawState = psResult->eRedrawState | XKEYPAD_REDRAW_TXT;
+      if (bRet) gslc_XKeyPadPendRedrawAddTxt(psResult);
       return;
 
     } else if (nId == KEYPAD_ID_SWAP_PAD) {

@@ -128,10 +128,10 @@ extern "C" {
   //     ADATOUCH_PIN_XP      // "X+": Can be a digital pin
 
   // Pin connections from diag_ard_touch_detect:
-  #define ADATOUCH_PIN_YP   A3    // "Y+": Must be an analog pin
+   #define ADATOUCH_PIN_YP   A3    // "Y+": Must be an analog pin
   #define ADATOUCH_PIN_XM   A2    // "X-": Must be an analog pin
   #define ADATOUCH_PIN_YM   9     // "Y-": Can be a digital pin
-  #define ADATOUCH_PIN_XP   8     // "X+": Can be a digital pin
+  #define ADATOUCH_PIN_XP   8
 
 
   // . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
@@ -151,7 +151,7 @@ extern "C" {
   #define ADATOUCH_X_MAX    937
   #define ADATOUCH_Y_MIN    72
   #define ADATOUCH_Y_MAX    895
-  #define ADATOUCH_REMAP_YX 0    // Some touch controllers may swap X & Y coords
+  #define ADATOUCH_REMAP_YX 0   // Some touch controllers may swap X & Y coords
 
   // Touch overlay resistance value
   // - In most cases, this value can be left as-is

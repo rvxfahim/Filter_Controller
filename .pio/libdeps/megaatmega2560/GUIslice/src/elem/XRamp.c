@@ -84,6 +84,8 @@ gslc_tsElemRef* gslc_ElemXRampCreate(gslc_tsGui* pGui,int16_t nElemId,int16_t nP
   gslc_tsXRamp* pXData,gslc_tsRect rElem,
   int16_t nMin,int16_t nMax,int16_t nVal,gslc_tsColor colGauge,bool bVert)
 {
+  (void)colGauge; // Unused FIXME: Should be used
+  (void)bVert; // Unused
   if ((pGui == NULL) || (pXData == NULL)) {
     static const char GSLC_PMEM FUNCSTR[] = "ElemXRampCreate";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -210,7 +212,7 @@ bool gslc_ElemXRampDrawHelp(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRed
   uint16_t  nHeight;
   int32_t   nHeightTmp;
   uint16_t  nHeightBot;
-  uint16_t  nX;
+  int16_t   nX;
   uint16_t  nColInd;
 
   // Calculate region to draw or clear

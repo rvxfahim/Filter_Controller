@@ -80,6 +80,7 @@ extern "C" {
   //#include "../configs/ard-shld-adafruit_18_joy.h"
   //#include "../configs/ard-shld-adafruit_28_cap.h"
   //#include "../configs/ard-shld-adafruit_28_res.h"
+  //#include "../configs/ard-shld-eastrising_35_ili9488_cap.h"
   //#include "../configs/ard-shld-eastrising_50_ra8875_res.h"
   //#include "../configs/ard-shld-eastrising_50_ra8875_sumo_res.h"
   //#include "../configs/ard-shld-eastrising_50_ssd1963_res.h"  
@@ -89,7 +90,7 @@ extern "C" {
   //#include "../configs/ard-shld-gevino_tft.h"
   //#include "../configs/ard-shld-ili9341_16b_touch.h"
   //#include "../configs/ard-shld-mcufriend.h"
-  //#include "../configs/ard-shld-mcufriend_4wire.h"
+  #include "../configs/ard-shld-mcufriend_4wire.h"
   //#include "../configs/ard-shld-mcufriend_xpt2046.h"
   //#include "../configs/ard-shld-osmart_22_68130_touch.h"
   //#include "../configs/ard-shld-waveshare_28_touch.h"
@@ -105,7 +106,7 @@ extern "C" {
   //#include "../configs/ard-adagfx-ili9341-ft6206.h"
   //#include "../configs/ard-adagfx-ili9341-input.h"
   //#include "../configs/ard-adagfx-ili9341-notouch.h"
-  #include "../configs/ard-adagfx-ili9341-simple.h"
+  //#include "../configs/ard-adagfx-ili9341-simple.h"
   //#include "../configs/ard-adagfx-ili9341-stmpe610.h"
   //#include "../configs/ard-adagfx-ili9341-xpt2046.h"
   //#include "../configs/ard-adagfx-pcd8544-notouch.h"
@@ -119,9 +120,11 @@ extern "C" {
   //#include "../configs/due-adagfx-ili9341-urtouch.h"
   //#include "../configs/due-adagfx-ra8875-urtouch.h"
 
-  // ESP8266, ESP32, M5stack, TTGO:
+  // ESP8266, ESP32, M5stack, WIO Terminal, TTGO:
   // ------------------------------------------------------
   //#include "../configs/esp-shld-m5stack.h"
+  //#include "../configs/esp-shld-wio-notouch.h"
+  //#include "../configs/esp-shld-wio-input.h"
   //#include "../configs/esp-shld-ttgo_btc_ticker.h"
   //#include "../configs/esp-tftespi-default-ft6206.h"
   //#include "../configs/esp-tftespi-default-notouch.h"

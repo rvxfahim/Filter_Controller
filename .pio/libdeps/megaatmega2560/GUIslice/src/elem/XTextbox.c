@@ -271,7 +271,7 @@ void gslc_ElemXTextboxBufAdd(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,unsigned 
 
   // Ensure that we haven't gone past end of line
   // - Note that we have to leave one extra byte for the line terminator (NULL)
-  if ((pBox->nBufPosX+1) >= pBox->nBufCols) {
+  if ((pBox->nBufPosX+1) >= (int16_t)(pBox->nBufCols)) {
     if (pBox->bWrapEn) {
       // Perform line wrap
       // - Force a null at the end of the current line first
@@ -330,6 +330,9 @@ void gslc_ElemXTextboxBufAdd(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,unsigned 
 void gslc_ElemXTextboxColSet(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsColor nCol)
 {
 #if (GSLC_FEATURE_XTEXTBOX_EMBED == 0)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  (void)nCol; // Unused
   GSLC_DEBUG2_PRINT("ERROR: gslc_ElemXTextboxColSet() not enabled. Requires GSLC_FEATURE_XTEXTBOX_EMBED=1 %s\n","");
   return;
 #else
@@ -355,6 +358,8 @@ void gslc_ElemXTextboxColSet(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsCo
 void gslc_ElemXTextboxColReset(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 {
 #if (GSLC_FEATURE_XTEXTBOX_EMBED == 0)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
   GSLC_DEBUG2_PRINT("ERROR: gslc_ElemXTextboxColReset() not enabled. Requires GSLC_FEATURE_XTEXTBOX_EMBED=1 %s\n","");
   return;
 #else
@@ -511,7 +516,7 @@ bool gslc_ElemXTextboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw
 
     // Calculate row offset after accounting for buffer wrap
     // and current window starting offset
-    uint16_t nRowCur = nWndRowStartScr + nOutRow;
+    int16_t nRowCur = nWndRowStartScr + nOutRow;
     nRowCur = nRowCur % pBox->nBufRows;
 
     // If we are doing incremental redraw and only a single

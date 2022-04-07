@@ -91,6 +91,7 @@ gslc_tsElemRef* gslc_ElemXCheckboxCreate(gslc_tsGui* pGui,int16_t nElemId,int16_
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
 
   // Default group assignment. Can override later with ElemSetGroup()
   sElem.nGroup            = GSLC_GROUP_ID_NONE;
@@ -139,7 +140,7 @@ bool gslc_ElemXCheckboxGetState(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 // Determine which checkbox in the group has been "checked"
 gslc_tsElemRef* gslc_ElemXCheckboxFindChecked(gslc_tsGui* pGui,int16_t nGroupId)
 {
-  int16_t             nCurInd;
+  uint16_t            nCurInd;
   gslc_tsElemRef*     pCurElemRef = NULL;
   gslc_tsElem*        pCurElem = NULL;
   int16_t             nCurType;
@@ -296,7 +297,7 @@ void gslc_ElemXCheckboxSetState(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool b
     // Proceed to deselect any other selected items in the group.
     // Note that SetState calls itself to deselect other items so it
     // is important to qualify this logic with bChecked=true
-    int16_t           nCurInd;
+    uint16_t          nCurInd;
     int16_t           nCurId;
     gslc_tsElem*      pCurElem = NULL;
     gslc_tsElemRef*   pCurElemRef = NULL;
@@ -377,6 +378,7 @@ void gslc_ElemXCheckboxToggleState(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 //   simpler callback function definition & scalability.
 bool gslc_ElemXCheckboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
 {
+  (void)eRedraw; // Unused
   // Typecast the parameters to match the GUI and element types
   gslc_tsGui*       pGui  = (gslc_tsGui*)(pvGui);
   gslc_tsElemRef*   pElemRef = (gslc_tsElemRef*)(pvElemRef);
@@ -384,36 +386,36 @@ bool gslc_ElemXCheckboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedra
   gslc_tsXCheckbox* pCheckbox = (gslc_tsXCheckbox*)gslc_GetXDataFromRef(pGui, pElemRef, GSLC_TYPEX_CHECKBOX, __LINE__);
   if (!pCheckbox) return false;
 
-  gslc_tsElem*    pElem     = gslc_GetElemFromRef(pGui,pElemRef);
-  gslc_tsRect     rInner;
-
   bool bChecked  = pCheckbox->bChecked;
   gslc_teXCheckboxStyle   nStyle = pCheckbox->nStyle;
-  bool bGlow     = (pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN) && gslc_ElemGetGlow(pGui,pElemRef);
+
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
 
   // Draw the background
-  gslc_DrawFillRect(pGui,pElem->rElem,pElem->colElemFill);
+  gslc_DrawFillRect(pGui,sState.rInner,sState.colInner);
 
   // Generic coordinate calcs
   int16_t nX0,nY0,nX1,nY1,nMidX,nMidY;
-  nX0 = pElem->rElem.x;
-  nY0 = pElem->rElem.y;
-  nX1 = pElem->rElem.x + pElem->rElem.w - 1;
-  nY1 = pElem->rElem.y + pElem->rElem.h - 1;
+  nX0 = sState.rInner.x;
+  nY0 = sState.rInner.y;
+  nX1 = sState.rInner.x + sState.rInner.w - 1;
+  nY1 = sState.rInner.y + sState.rInner.h - 1;
   nMidX = (nX0+nX1)/2;
   nMidY = (nY0+nY1)/2;
   if (nStyle == GSLCX_CHECKBOX_STYLE_BOX) {
     // Draw the center indicator if checked
-    rInner = gslc_ExpandRect(pElem->rElem,-5,-5);
+    gslc_tsRect rCenter = gslc_ExpandRect(sState.rInner,-5,-5);
     if (bChecked) {
       // If checked, fill in the inner region
-      gslc_DrawFillRect(pGui,rInner,pCheckbox->colCheck);
+      gslc_DrawFillRect(pGui,rCenter,pCheckbox->colCheck);
     } else {
       // Assume the background fill has already been done so
       // we don't need to do anything more in the unchecked case
     }
     // Draw a frame around the checkbox
-    gslc_DrawFrameRect(pGui,pElem->rElem,(bGlow)?pElem->colElemFrameGlow:pElem->colElemFrame);
+    gslc_DrawFrameRect(pGui,sState.rFull,sState.colFrm);
 
   } else if (nStyle == GSLCX_CHECKBOX_STYLE_X) {
     // Draw an X through center if checked
@@ -422,15 +424,17 @@ bool gslc_ElemXCheckboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedra
       gslc_DrawLine(pGui,nX0,nY1,nX1,nY0,pCheckbox->colCheck);
     }
     // Draw a frame around the checkbox
-    gslc_DrawFrameRect(pGui,pElem->rElem,(bGlow)?pElem->colElemFrameGlow:pElem->colElemFrame);
+    gslc_DrawFrameRect(pGui,sState.rFull,sState.colFrm);
 
   } else if (nStyle == GSLCX_CHECKBOX_STYLE_ROUND) {
     // Draw inner circle if checked
     if (bChecked) {
       gslc_DrawFillCircle(pGui,nMidX,nMidY,5,pCheckbox->colCheck);
     }
-    // Draw a frame around the checkbox
-    gslc_DrawFrameCircle(pGui,nMidX,nMidY,(pElem->rElem.w/2),(bGlow)?pElem->colElemFrameGlow:pElem->colElemFrame);
+    // Draw outer circle
+    // - Use 1 pixel margin to allow for circle rounding to
+    //   still stay within element rect
+    gslc_DrawFrameCircle(pGui,nMidX,nMidY,(sState.rFull.w/2)-1,sState.colFrm);
 
   }
 
@@ -453,6 +457,8 @@ bool gslc_ElemXCheckboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedra
 //
 bool gslc_ElemXCheckboxTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int16_t nRelX,int16_t nRelY)
 {
+  (void)nRelX; // Unused
+  (void)nRelY; // Unused
 #if defined(DRV_TOUCH_NONE)
   return false;
 #else
@@ -469,6 +475,7 @@ bool gslc_ElemXCheckboxTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int
   bool  bRadio      = pCheckbox->bRadio;
   bool  bCheckedOld = pCheckbox->bChecked;
   bool  bGlowingOld = gslc_ElemGetGlow(pGui,pElemRef);
+  bool  bFocusedOld = gslc_ElemGetFocus(pGui,pElemRef);
 
   switch(eTouch) {
 
@@ -508,6 +515,7 @@ bool gslc_ElemXCheckboxTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int
   // If the checkbox changed state, redraw
   bool  bChanged = false;
   if (gslc_ElemGetGlow(pGui,pElemRef) != bGlowingOld) { bChanged = true; }
+  if (gslc_ElemGetFocus(pGui,pElemRef) != bFocusedOld) { bChanged = true; }
   if (pCheckbox->bChecked != bCheckedOld) { bChanged = true; }
   if (bChanged) {
     // Incremental redraw

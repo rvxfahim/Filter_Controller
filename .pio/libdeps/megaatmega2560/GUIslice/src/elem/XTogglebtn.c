@@ -93,6 +93,7 @@ gslc_tsElemRef* gslc_ElemXTogglebtnCreate(gslc_tsGui* pGui,int16_t nElemId,int16
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
 
   // Define other extended data
   sElem.pXData            = (void*)(pXData);
@@ -184,7 +185,7 @@ void gslc_ElemXTogglebtnSetState(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool 
     // Proceed to deselect any other selected items in the group.
     // Note that SetState calls itself to deselect other items so it
     // is important to qualify this logic with bOn=true
-    int16_t           nCurInd;
+    uint16_t          nCurInd;
     int16_t           nCurId;
     gslc_tsElem*      pCurElem = NULL;
     gslc_tsElemRef*   pCurElemRef = NULL;
@@ -250,78 +251,88 @@ void gslc_ElemXTogglebtnToggleState(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
   gslc_ElemXTogglebtnSetState(pGui,pElemRef,bStateNew);
 }
 
-void gslc_ElemXTogglebtnDrawCircularHelp(gslc_tsGui* pGui,gslc_tsElem* pElem,gslc_tsXTogglebtn* pTogglebtn) 
+void gslc_ElemXTogglebtnDrawCircularHelp(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsXTogglebtn* pTogglebtn) 
 {
-  // Work out the sizes of the inner rectangles 
-  gslc_tsRect rInner = gslc_ExpandRect(pElem->rElem,-1,-1);
+  gslc_tsElem* pElem = gslc_GetElemFromRef(pGui,pElemRef);
 
   // frame enabled?
   bool bFrameEn  = pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN;
 
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
+
   // work out our circle positions
-  uint16_t nRadius  = rInner.h / 2;
-  int16_t  nLeftX   = rInner.x + nRadius;
-  int16_t  nLeftY   = rInner.y + nRadius;
-  int16_t  nRightX  = rInner.x + pElem->rElem.w - nRadius -1;
-  int16_t  nRightY  = rInner.y + nRadius;
+  uint16_t nRadius  = sState.rInner.h / 2;
+  int16_t  nLeftX   = sState.rInner.x + nRadius;
+  int16_t  nLeftY   = sState.rInner.y + nRadius;
+  int16_t  nRightX  = sState.rInner.x + sState.rFull.w - nRadius -1;
+  int16_t  nRightY  = sState.rInner.y + nRadius;
     
   if (pTogglebtn->bOn) {
     // draw our main body
-    gslc_DrawFillRoundRect(pGui,rInner,nRadius,pTogglebtn->colOnState);
+    gslc_DrawFillRoundRect(pGui,sState.rInner,nRadius,pTogglebtn->colOnState);
     // place thumb on right-hand side
     gslc_DrawFillCircle(pGui,nRightX-1,nRightY,nRadius-1,pTogglebtn->colThumb);
     if (bFrameEn) {
-// ON HX8357 and ILI9341 with TFT_eSPI if we do rounded rect frame we get 
-// something that looks like two reversed parenthesis )button( around button 
-      gslc_DrawFrameCircle(pGui,nRightX,nRightY,nRadius-1,pElem->colElemFrame);
-//      gslc_DrawFrameRoundRect(pGui,pElem->rElem,pElem->rElem.h,pElem->colElemFrame);
-      gslc_DrawFrameRoundRect(pGui,rInner,nRadius,pElem->colElemFrame);
+      // NOTE: On HX8357 and ILI9341 with TFT_eSPI if we do rounded rect frame we get 
+      // something that looks like two reversed parenthesis )button( around button 
+      gslc_DrawFrameCircle(pGui,nRightX,nRightY,nRadius-1,sState.colFrm);
+      //gslc_DrawFrameRoundRect(pGui,pElem->rElem,pElem->rElem.h,pElem->colElemFrame);
+      gslc_DrawFrameRoundRect(pGui,sState.rInner,nRadius,sState.colFrm);
     }
   } else {
     // draw our main body
-    gslc_DrawFillRoundRect(pGui,rInner,nRadius,pTogglebtn->colOffState);
+    gslc_DrawFillRoundRect(pGui,sState.rInner,nRadius,pTogglebtn->colOffState);
     // place thumb on left-hand side
     gslc_DrawFillCircle(pGui,nLeftX,nLeftY,nRadius-1,pTogglebtn->colThumb);
     if (bFrameEn) {
-      gslc_DrawFrameCircle(pGui,nLeftX,nLeftY,nRadius-1,pElem->colElemFrame);
-//      gslc_DrawFrameRoundRect(pGui,,pElem->rElem.h,pElem->colElemFrame);
-      gslc_DrawFrameRoundRect(pGui,rInner,nRadius,pElem->colElemFrame);
+      gslc_DrawFrameCircle(pGui,nLeftX,nLeftY,nRadius-1,sState.colFrm);
+      gslc_DrawFrameRoundRect(pGui,sState.rInner,nRadius,sState.colFrm);
     }
   }
 }
 
-void gslc_ElemXTogglebtnDrawRectangularHelp(gslc_tsGui* pGui,gslc_tsElem* pElem,gslc_tsXTogglebtn* pTogglebtn) 
+void gslc_ElemXTogglebtnDrawRectangularHelp(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsXTogglebtn* pTogglebtn) 
 {
+  gslc_tsElem* pElem = gslc_GetElemFromRef(pGui,pElemRef);
   // frame enabled?
   bool bFrameEn  = pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN;
 
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
+
+  // Draw a frame around the checkbox
+  gslc_DrawFrameRect(pGui,sState.rFull,sState.colFrm);
+
   // Work out the sizes of the inner rectangles 
   gslc_tsRect rSquare = {
-    pElem->rElem.x,
-    pElem->rElem.y,
-    pElem->rElem.h, // force a square
-    pElem->rElem.h
+    sState.rFull.x,
+    sState.rFull.y,
+    sState.rFull.h, // force a square
+    sState.rFull.h
   };
-  gslc_tsRect rInner = gslc_ExpandRect(pElem->rElem,-1,-1);
 
   if (pTogglebtn->bOn) {
-    gslc_DrawFillRect(pGui,rInner,pTogglebtn->colOnState);
+    gslc_DrawFillRect(pGui,sState.rInner,pTogglebtn->colOnState);
     // place thumb on left-hand side
     gslc_DrawFillRect(pGui,rSquare,pTogglebtn->colThumb);
     if (bFrameEn) {
-      gslc_DrawFrameRect(pGui,pElem->rElem,pElem->colElemFrame);
-      gslc_DrawFrameRect(pGui,rSquare,pElem->colElemFrame);
+      gslc_DrawFrameRect(pGui,sState.rFull,sState.colFrm);
+      gslc_DrawFrameRect(pGui,rSquare,sState.colFrm);
     }
   } else {
-    gslc_DrawFillRect(pGui,rInner,pTogglebtn->colOffState);
+    gslc_DrawFillRect(pGui,sState.rInner,pTogglebtn->colOffState);
     // place thumb on right-hand side
-    rSquare.x = rInner.x + rInner.w - rInner.h - 1;
+    rSquare.x = sState.rInner.x + sState.rInner.w - sState.rInner.h - 1;
     gslc_DrawFillRect(pGui,rSquare,pTogglebtn->colThumb);
     if (bFrameEn) {
-      gslc_DrawFrameRect(pGui,pElem->rElem,pElem->colElemFrame);
-      gslc_DrawFrameRect(pGui,rSquare,pElem->colElemFrame);
+      gslc_DrawFrameRect(pGui,sState.rFull,sState.colFrm);
+      gslc_DrawFrameRect(pGui,rSquare,sState.colFrm);
     }
   }
+
 }
 
 // Redraw the togglebtn
@@ -331,23 +342,24 @@ void gslc_ElemXTogglebtnDrawRectangularHelp(gslc_tsGui* pGui,gslc_tsElem* pElem,
 
 bool gslc_ElemXTogglebtnDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
 {
+  (void)eRedraw; // Unused
   // Typecast the parameters to match the GUI and element types
   gslc_tsGui*       pGui  = (gslc_tsGui*)(pvGui);
   gslc_tsElemRef*   pElemRef = (gslc_tsElemRef*)(pvElemRef);
 
   gslc_tsXTogglebtn* pTogglebtn = (gslc_tsXTogglebtn*)gslc_GetXDataFromRef(pGui, pElemRef, GSLC_TYPEX_TOGGLEBTN, __LINE__);
   if (!pTogglebtn) {
-    GSLC_DEBUG_PRINT("ERROR: gslc_ElemXTogglebtnDraw(%s) pXData is NULL\n","");
+    GSLC_DEBUG2_PRINT("ERROR: gslc_ElemXTogglebtnDraw(%s) pXData is NULL\n","");
     return false;
   }
 
-  gslc_tsElem* pElem = gslc_GetElemFromRef(pGui,pElemRef);
-//  gslc_DrawFillRect(pGui,pElem->rElem,pElem->colElemFill);
+  //gslc_tsElem* pElem = gslc_GetElemFromRef(pGui,pElemRef);
+  //gslc_DrawFillRect(pGui,pElem->rElem,pElem->colElemFill);
  
   if (pTogglebtn->bCircular) {
-    gslc_ElemXTogglebtnDrawCircularHelp(pGui, pElem, pTogglebtn);
+    gslc_ElemXTogglebtnDrawCircularHelp(pGui, pElemRef, pTogglebtn);
   } else {
-    gslc_ElemXTogglebtnDrawRectangularHelp(pGui, pElem, pTogglebtn);
+    gslc_ElemXTogglebtnDrawRectangularHelp(pGui, pElemRef, pTogglebtn);
   }
   
   // Clear the redraw flag
@@ -409,7 +421,7 @@ bool gslc_ElemXTogglebtnTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,in
 // Determine which togglebtn in the group is selected "on"
 gslc_tsElemRef* gslc_ElemXTogglebtnFindSelected(gslc_tsGui* pGui,int16_t nGroupId)
 {
-  int16_t             nCurInd;
+  uint16_t            nCurInd;
   gslc_tsElemRef*     pCurElemRef = NULL;
   gslc_tsElem*        pCurElem = NULL;
   int16_t             nCurType;

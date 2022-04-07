@@ -4,12 +4,12 @@
 // - https://www.impulseadventure.com/elec/guislice-gui.html
 // - https://github.com/ImpulseAdventure/GUIslice
 //
-// - Version 0.16.0
+// - Version 0.17.0
 // =======================================================================
 //
 // The MIT License
 //
-// Copyright 2016-2020 Calvin Hass
+// Copyright 2016-2021 Calvin Hass
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -68,7 +68,6 @@
 // Version tracking
 #include "GUIslice_version.h"
 
-
 // ========================================================================
 
 /// Global debug output function
@@ -76,7 +75,11 @@
 GSLC_CB_DEBUG_OUT g_pfDebugOut = NULL;
 
 // Forward declaration for trigonometric lookup table
-extern uint16_t  m_nLUTSinF0X16[257];
+#if defined(LUT_SIN_64)
+extern const uint16_t  m_nLUTSinF0X16[65];
+#else
+extern const uint16_t  m_nLUTSinF0X16[257];
+#endif
 
 
 // ------------------------------------------------------------------------
@@ -94,6 +97,7 @@ const char GSLC_PMEM ERRSTR_PXD_NULL[]  = "ERROR: %z() pXData NULL\n";
 
 char* gslc_GetVer(gslc_tsGui* pGui)
 {
+  (void)pGui; // Unused
   return (char*)GUISLICE_VER;
 }
 
@@ -170,10 +174,15 @@ bool gslc_Init(gslc_tsGui* pGui,void* pvDriver,gslc_tsPage* asPage,uint8_t nMaxP
     pGui->abPageStackActive[nInd] = true;
     pGui->abPageStackDoDraw[nInd] = true;
   }
+  pGui->bRedrawNeeded      = false;
   pGui->bScreenNeedRedraw  = true;
   pGui->bScreenNeedFlip    = false;
 
   gslc_InvalidateRgnReset(pGui);
+
+   // Clear the event-pending struct
+  pGui->bEventPending = false;
+  pGui->sEventPend.eType = GSLC_EVT_NONE; 
 
   // Default global element characteristics
   pGui->nRoundRadius = 4;
@@ -215,7 +224,21 @@ bool gslc_Init(gslc_tsGui* pGui,void* pvDriver,gslc_tsPage* asPage,uint8_t nMaxP
   pGui->asInputMap            = NULL;
   pGui->nInputMapMax          = 0;
   pGui->nInputMapCnt          = 0;
+  pGui->nInputMode            = GSLC_INPUTMODE_NAV; // Navigate mode
 
+  #if (GSLC_FEATURE_INPUT)
+  pGui->nFocusPageInd         = GSLC_IND_NONE;
+  pGui->pFocusPage            = NULL;
+  pGui->pFocusElemRef         = NULL;
+  pGui->nFocusElemInd         = GSLC_IND_NONE;
+  pGui->nFocusElemMax         = 0;
+  pGui->nFocusSavedPageInd    = GSLC_IND_NONE;
+  pGui->nFocusSavedElemInd    = GSLC_IND_NONE;
+
+  pGui->colFocusNone          = GSLC_COL_BLACK;
+  pGui->colFocus              = GSLC_COL_MAGENTA;
+  pGui->colFocusEdit          = GSLC_COL_RED;
+  #endif // GSLC_FEATURE_INPUT
 
   pGui->sImgRefBkgnd = gslc_ResetImage();
 
@@ -284,8 +307,12 @@ void gslc_SetPinPollFunc(gslc_tsGui* pGui,GSLC_CB_PIN_POLL pfunc)
 void gslc_InitInputMap(gslc_tsGui* pGui,gslc_tsInputMap* asInputMap,uint8_t nInputMapMax)
 {
 #if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)asInputMap; // Unused
+  (void)nInputMapMax; // Unused
   return;
 #else
+  (void)pGui; // Unused
   pGui->asInputMap    = asInputMap;
   pGui->nInputMapMax  = nInputMapMax;
   pGui->nInputMapCnt  = 0;
@@ -295,6 +322,11 @@ void gslc_InitInputMap(gslc_tsGui* pGui,gslc_tsInputMap* asInputMap,uint8_t nInp
 void gslc_InputMapAdd(gslc_tsGui* pGui,gslc_teInputRawEvent eInputEvent,int16_t nInputVal,gslc_teAction eAction,int16_t nActionVal)
 {
 #if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)eInputEvent; // Unused
+  (void)nInputVal; // Unused
+  (void)eAction; // Unused
+  (void)nActionVal; // Unused
   return;
 #else
   if (pGui->nInputMapCnt >= pGui->nInputMapMax) {
@@ -314,6 +346,11 @@ void gslc_InputMapAdd(gslc_tsGui* pGui,gslc_teInputRawEvent eInputEvent,int16_t 
 bool gslc_InputMapLookup(gslc_tsGui* pGui,gslc_teInputRawEvent eInputEvent,int16_t nInputVal,gslc_teAction* peAction,int16_t* pnActionVal)
 {
 #if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)eInputEvent; // Unused
+  (void)nInputVal; // Unused
+  (void)peAction; // Unused
+  (void)pnActionVal; // Unused
   return false;
 #else
   uint8_t         nInputInd;
@@ -572,6 +609,14 @@ void gslc_Update(gslc_tsGui* pGui)
       GSLC_TXT_DEFAULT, GSLC_COL_RED, GSLC_COL_BLACK);
   }
 
+  // --------------------------------------------------------------
+  // Handle any pending events
+  // --------------------------------------------------------------
+  if (pGui->bEventPending) {
+    gslc_ElemEvent((void*)pGui,pGui->sEventPend);
+    pGui->bEventPending = false;
+  }
+
   // ---------------------------------------------
   // Touch handling
   // ---------------------------------------------
@@ -625,7 +670,10 @@ void gslc_Update(gslc_tsGui* pGui)
     if (pfuncPinPoll != NULL) {
       bEvent = (*pfuncPinPoll)(pGui,&nPinNum,&nPinState);
       if (bEvent) {
-        eInputEvent = GSLC_INPUT_PIN_ASSERT;
+        // We only enter here after a pin change/edge event was detected.
+        // - PinState=1 means the pin state is now 1 (pressed)
+        // - PinState=0 means the pin state is now 0 (released)
+        eInputEvent = nPinState? GSLC_INPUT_PIN_ASSERT : GSLC_INPUT_PIN_DEASSERT;
         nInputVal = nPinNum;
       }
     } 
@@ -647,18 +695,18 @@ void gslc_Update(gslc_tsGui* pGui)
       // - Handle the events on the current page
       switch (eInputEvent) {
         case GSLC_INPUT_KEY_DOWN:
-          gslc_TrackInput(pGui,NULL,eInputEvent,nInputVal);
+          gslc_TrackInput(pGui,eInputEvent,nInputVal);
           break;
         case GSLC_INPUT_KEY_UP:
           // NOTE: For now, only handling key-down events
-          // TODO: gslc_TrackInput(pGui,NULL,eInputEvent,nInputVal);
+          // TODO: gslc_TrackInput(pGui,eInputEvent,nInputVal);
           break;
 
         case GSLC_INPUT_PIN_ASSERT:
-          gslc_TrackInput(pGui,NULL,eInputEvent,nInputVal);
+          gslc_TrackInput(pGui,eInputEvent,nInputVal);
           break;
         case GSLC_INPUT_PIN_DEASSERT:
-          // TODO: gslc_TrackInput(pGui,NULL,eInputEvent,nInputVal);
+          gslc_TrackInput(pGui,eInputEvent,nInputVal);
           break;
 
         case GSLC_INPUT_TOUCH:
@@ -703,7 +751,11 @@ void gslc_Update(gslc_tsGui* pGui)
   }
 
   // Perform any redraw required for current page
-  gslc_PageRedrawGo(pGui);
+  // - Only perform the redraw if at least one element
+  //   has been marked as requiring redraw
+  if (pGui->bRedrawNeeded) {
+    gslc_PageRedrawGo(pGui);
+  }
 
   // Simple "frame" rate reporting
   // - Note that the rate is based on the number of calls to gslc_Update()
@@ -728,6 +780,7 @@ void gslc_Update(gslc_tsGui* pGui)
 
 gslc_tsEvent  gslc_EventCreate(gslc_tsGui* pGui,gslc_teEventType eType,uint8_t nSubType,void* pvScope,void* pvData)
 {
+  (void)pGui; // Unused
   gslc_tsEvent      sEvent;
   sEvent.eType      = eType;
   sEvent.nSubType   = nSubType;
@@ -744,8 +797,8 @@ gslc_tsEvent  gslc_EventCreate(gslc_tsGui* pGui,gslc_teEventType eType,uint8_t n
 
 bool gslc_IsInRect(int16_t nSelX,int16_t nSelY,gslc_tsRect rRect)
 {
-  if ( (nSelX >= rRect.x) && (nSelX <= rRect.x+rRect.w) &&
-     (nSelY >= rRect.y) && (nSelY <= rRect.y+rRect.h) ) {
+  if ( (nSelX >= rRect.x) && (nSelX <= rRect.x+(int16_t)rRect.w) &&
+     (nSelY >= rRect.y) && (nSelY <= rRect.y+(int16_t)rRect.h) ) {
     return true;
   } else {
     return false;
@@ -754,8 +807,8 @@ bool gslc_IsInRect(int16_t nSelX,int16_t nSelY,gslc_tsRect rRect)
 
 bool gslc_IsInWH(int16_t nSelX,int16_t nSelY,uint16_t nWidth,uint16_t nHeight)
 {
-  if ( (nSelX >= 0) && (nSelX <= nWidth-1) &&
-     (nSelY >= 0) && (nSelY <= nHeight-1) ) {
+  if ( (nSelX >= 0) && (nSelX <= (int16_t)(nWidth)-1) &&
+     (nSelY >= 0) && (nSelY <= (int16_t)(nHeight)-1) ) {
     return true;
   } else {
     return false;
@@ -937,6 +990,8 @@ gslc_tsImgRef gslc_GetImageFromSD(const char* pFname,gslc_teImgRefFlags eFmt)
   sImgRef.pImgBuf   = NULL;
   sImgRef.pvImgRaw  = NULL;
 #else
+  (void)pFname; // Unused
+  (void)eFmt; // Unused
   // TODO: Change message to also handle non-Arduino output
   GSLC_DEBUG_PRINT("ERROR: GSLC_SD_EN not enabled\n","");
   //GSLC_DEBUG2_PRINT("ERROR: GetImageFromSD(%s) not supported as Config:GSLC_SD_EN=0\n","");
@@ -1020,7 +1075,11 @@ int16_t gslc_sinFX(int16_t n64Ang)
 
   // n64Ang is quarter-phase range [0 .. 90*64]
   // suitable for lookup table indexing
+#if defined(LUT_SIN_64)
+  uint16_t  nLutInd = ((uint32_t)n64Ang * 64)/(90*64);
+#else
   uint16_t  nLutInd = ((uint32_t)n64Ang * 256)/(90*64);
+#endif
   uint16_t  nLutVal = m_nLUTSinF0X16[nLutInd];
 
   // Leave MSB for the signed bit
@@ -2068,6 +2127,15 @@ void gslc_SetPageBase(gslc_tsGui* pGui, int16_t nPageId)
 void gslc_SetPageCur(gslc_tsGui* pGui,int16_t nPageId)
 {
   gslc_SetStackPage(pGui, GSLC_STACK_CUR, nPageId);
+
+  // If a focus is currently active, change the focus to the new page
+  #if (GSLC_FEATURE_INPUT)
+  if (pGui->nFocusPageInd != GSLC_IND_NONE) {
+    // Update the focus to the new page and find
+    // suitable default element to receive focus
+    gslc_FocusElemIndSet(pGui,GSLC_STACK_CUR,GSLC_IND_NONE,true);
+  }
+  #endif
 }
 
 void gslc_SetPageOverlay(gslc_tsGui* pGui,int16_t nPageId)
@@ -2093,6 +2161,17 @@ void gslc_PopupShow(gslc_tsGui* pGui, int16_t nPageId, bool bModal)
     gslc_SetStackState(pGui, GSLC_STACK_CUR, true, true);
     gslc_SetStackState(pGui, GSLC_STACK_BASE, true, true);
   }
+  // If a focus is currently active, save it and change the
+  // focus to the new popup page
+  #if (GSLC_FEATURE_INPUT)
+  pGui->nFocusSavedPageInd = pGui->nFocusPageInd;
+  pGui->nFocusSavedElemInd = pGui->nFocusElemInd;
+  if (pGui->nFocusPageInd != GSLC_IND_NONE) {
+    // Update the focus to the overlay page and find
+    // suitable default element to receive focus
+    gslc_FocusElemIndSet(pGui,GSLC_STACK_OVERLAY,GSLC_IND_NONE,true);
+  }
+  #endif
 }
 
 void gslc_PopupHide(gslc_tsGui* pGui)
@@ -2102,6 +2181,17 @@ void gslc_PopupHide(gslc_tsGui* pGui)
   // - This is done in case they were deactivated due to a modal popup
   gslc_SetStackState(pGui, GSLC_STACK_CUR, true, true);
   gslc_SetStackState(pGui, GSLC_STACK_BASE, true, true);
+
+  #if (GSLC_FEATURE_INPUT)
+  // If there was a focus state saved before we opened
+  // the popup, restore it now
+  if (pGui->nFocusSavedPageInd != GSLC_IND_NONE) {
+    gslc_FocusElemIndSet(pGui,pGui->nFocusSavedPageInd,pGui->nFocusSavedElemInd,true);
+    // Now clear the saved focus settings
+    pGui->nFocusSavedPageInd = GSLC_IND_NONE;
+    pGui->nFocusSavedElemInd = GSLC_IND_NONE;
+  }
+  #endif
 }
 
 
@@ -2114,6 +2204,11 @@ void gslc_PageRedrawSet(gslc_tsGui* pGui,bool bRedraw)
   }
 
   pGui->bScreenNeedRedraw = bRedraw;
+
+  if (bRedraw) {
+    // Set the "need redraw" flag
+    pGui->bRedrawNeeded = true;
+  }
 }
 
 bool gslc_PageRedrawGet(gslc_tsGui* pGui)
@@ -2136,7 +2231,7 @@ bool gslc_PageRedrawGet(gslc_tsGui* pGui)
 //       on the region exposed by the transparent element.
 void gslc_PageRedrawCalc(gslc_tsGui* pGui)
 {
-  int               nInd;
+  uint16_t          nInd;
   int               nStackPage;
   gslc_tsElem*      pElem = NULL;
   gslc_tsElemRef*   pElemRef = NULL;
@@ -2166,6 +2261,8 @@ void gslc_PageRedrawCalc(gslc_tsGui* pGui)
       //GSLC_DEBUG2_PRINT("PageRedrawCalc: Ind=%u ID=%u redraw=%u flags_old=%u fea=%u\n",nInd,pElem->nId,
       //        (eFlags & GSLC_ELEMREF_REDRAW_MASK),eFlags,pElem->nFeatures);
       if ((eFlags & GSLC_ELEMREF_REDRAW_MASK) != GSLC_ELEMREF_REDRAW_NONE) {
+
+        // We found at least one item requiring redraw
 
         // If partial redraw is supported, then we
         // look out for transparent elements which may
@@ -2202,7 +2299,7 @@ void gslc_PageRedrawCalc(gslc_tsGui* pGui)
 // Redraw the active page
 // - If the page has been marked as needing redraw, then all
 //   elements are rendered
-// - If the page has not been marked as needing redraw then only
+// - If the entire page has not been marked as needing redraw then only
 //   the elements that have been marked as needing redraw
 //   are rendered.
 void gslc_PageRedrawGo(gslc_tsGui* pGui)
@@ -2302,6 +2399,9 @@ void gslc_PageRedrawGo(gslc_tsGui* pGui)
  
   // Restore the clipping region to the entire display
   gslc_SetClipRect(pGui, NULL);
+
+  // Clear the "need redraw" flag
+  pGui->bRedrawNeeded = false;
 
   // Page flip the entire screen
   // - TODO: We could also call Update instead of Flip as that would
@@ -2405,44 +2505,6 @@ void gslc_PageSetEventFunc(gslc_tsGui* pGui,gslc_tsPage* pPage,GSLC_CB_EVENT fun
 */
 
 
-// TODO: Create a PageStackFocusStep()
-// - The functionality would track which page is currently focused
-//   and instead of looping around on the page, the next enabled
-//   page in the stack would be traversed.
-// - Wrapping at the bottom of the stack would create the GSLC_IND_NONE
-//   state.
-// - Without this enhancement, GPIO / keyboard controls will only
-//   operate on the top-most page in the stack, which prevents the
-//   ability to navigate tab select controls if they are provided
-//   by a lower layer in the stack.
-
-
-int16_t gslc_PageFocusStep(gslc_tsGui* pGui, gslc_tsPage* pPage, bool bNext)
-{
-#if !(GSLC_FEATURE_INPUT)
-  return GSLC_IND_NONE;
-#else
-  bool              bWrapped = false;
-  bool              bFound = false;
-  int16_t           nInd = GSLC_IND_NONE;
-  gslc_tsCollect* pCollect = &pPage->sCollect;
-
-  bFound = gslc_CollectFindFocusStep(pGui, pCollect, bNext, &bWrapped, &nInd);
-  if (!bFound) {
-    nInd = GSLC_IND_NONE;
-  } else {
-    if (bWrapped) {
-      // Optionally pause here
-      // If we wrap, then disable current focus for this particular step
-      nInd = GSLC_IND_NONE;
-    }
-  }
-  gslc_CollectSetFocus(pGui,pCollect,nInd);
-  return nInd;
-#endif
-}
-
-
 // ------------------------------------------------------------------------
 // Element General Functions
 // ------------------------------------------------------------------------
@@ -2460,6 +2522,7 @@ int gslc_ElemGetId(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 // Note that the flag remains aligned to the position within the flags bitfield
 uint8_t gslc_GetElemRefFlag(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,uint8_t nFlagMask)
 {
+  (void)pGui; // Unused
   if (!pElemRef) {
     static const char GSLC_PMEM FUNCSTR[] = "GetElemRefFlag";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -2472,6 +2535,7 @@ uint8_t gslc_GetElemRefFlag(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,uint8_t nF
 // Note that the nFlagVal must be aligned to the nFlagMask
 void gslc_SetElemRefFlag(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,uint8_t nFlagMask,uint8_t nFlagVal)
 {
+  (void)pGui; // Unused
   if (!pElemRef) {
     static const char GSLC_PMEM FUNCSTR[] = "SetElemRefFlag";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -2577,6 +2641,18 @@ void gslc_SetRoundRadius(gslc_tsGui* pGui,uint8_t nRadius)
   gslc_PageRedrawSet(pGui,true);
 }
 
+void gslc_SetFocusCol(gslc_tsGui* pGui,gslc_tsColor colFocusNone,gslc_tsColor colFocus,gslc_tsColor colFocusEdit)
+{
+  #if (GSLC_FEATURE_INPUT)
+  pGui->colFocusNone = colFocusNone;
+  pGui->colFocus = colFocus;
+  pGui->colFocusEdit = colFocusEdit;
+  // If we have changed the global settings, invalidate the page for full redraw
+  gslc_InvalidateRgnScreen(pGui);
+  gslc_PageFlipSet(pGui,true);
+  #endif // GSLC_FEATURE_INPUT
+}
+
 
 // ------------------------------------------------------------------------
 // Element Creation Functions
@@ -2627,13 +2703,14 @@ gslc_tsElemRef* gslc_ElemCreateBtnTxt(gslc_tsGui* pGui,int16_t nElemId,int16_t n
   sElem.colElemFill       = GSLC_COL_BLUE_DK4;
   sElem.colElemFillGlow   = GSLC_COL_BLUE_DK1;
   sElem.colElemFrame      = GSLC_COL_BLUE_DK2;
-  sElem.colElemFrameGlow  = GSLC_COL_BLUE_DK2;
+  sElem.colElemFrameGlow  = GSLC_COL_YELLOW;
   sElem.colElemText       = GSLC_COL_WHITE;
   sElem.colElemTextGlow   = GSLC_COL_WHITE;
   sElem.nFeatures        |= GSLC_ELEM_FEA_FRAME_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
   sElem.pfuncXTouch       = cbTouch;
   if (nPage != GSLC_PAGE_NONE) {
     pElemRef = gslc_ElemAdd(pGui,nPage,&sElem,GSLC_ELEMREF_DEFAULT);
@@ -2658,12 +2735,14 @@ gslc_tsElemRef* gslc_ElemCreateBtnImg(gslc_tsGui* pGui,int16_t nElemId,int16_t n
   sElem = gslc_ElemCreate(pGui,nElemId,nPage,GSLC_TYPE_BTN,rElem,NULL,0,GSLC_FONT_NONE);
   sElem.colElemFill       = GSLC_COL_BLACK;
   sElem.colElemFillGlow   = GSLC_COL_BLACK;
-  sElem.colElemFrame      = GSLC_COL_BLUE_DK2;
-  sElem.colElemFrameGlow  = GSLC_COL_BLUE_DK2;
+  sElem.colElemFrame      = GSLC_COL_BLACK;
+  sElem.colElemFrameGlow  = GSLC_COL_YELLOW;
   sElem.nFeatures        &= ~GSLC_ELEM_FEA_FRAME_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_NOSHRINK; // Can't shrink due to image
   sElem.pfuncXTouch       = cbTouch;
   // Update the normal and glowing images
   gslc_DrvSetElemImageNorm(pGui,&sElem,sImgRef);
@@ -2749,6 +2828,7 @@ gslc_tsElemRef* gslc_ElemCreateImg(gslc_tsGui* pGui,int16_t nElemId,int16_t nPag
   sElem.nFeatures      &= ~GSLC_ELEM_FEA_FRAME_EN;
   sElem.nFeatures      |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures      &= ~GSLC_ELEM_FEA_CLICK_EN;
+  sElem.nFeatures      |= GSLC_ELEM_FEA_NOSHRINK; // Can't shrink due to image
   // Update the normal and glowing images
   gslc_DrvSetElemImageNorm(pGui,&sElem,sImgRef);
   gslc_DrvSetElemImageGlow(pGui,&sElem,sImgRef);
@@ -3008,6 +3088,8 @@ bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
   if (!pElem) return false;
 
+  bool bOk = true;
+
   // --------------------------------------------------------------------------
   // Handle visibility
   // --------------------------------------------------------------------------
@@ -3018,6 +3100,54 @@ bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
     gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
     return true;
   }
+
+  // --------------------------------------------------------------------------
+  // Init for default drawing
+  // --------------------------------------------------------------------------
+
+  int16_t   nElemX,nElemY;
+  uint16_t  nElemW,nElemH;
+
+  // --------------------------------------------------------------------------
+  // Calculate the style
+  // --------------------------------------------------------------------------
+
+  bool bFillEn   = pElem->nFeatures & GSLC_ELEM_FEA_FILL_EN;
+  bool bRoundEn  = pElem->nFeatures & GSLC_ELEM_FEA_ROUND_EN;
+  bool bFrameEn  = pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN;
+  bool bGlowEn   = pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN; // Does the element support glow state?
+  bool bGlowing  = bGlowEn && gslc_ElemGetGlow(pGui,pElemRef); // Element should be glowing (if enabled)
+  bool bFocusEn  = pElem->nFeatures & GSLC_ELEM_FEA_FOCUS_EN; // Does the element support focus state?
+  //bool bFocused  = bFocusEn && gslc_ElemGetFocus(pGui,pElemRef); // Element should be focused (if enabled)
+
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
+
+  // Extract common fields
+  nElemX    = sState.rInner.x;
+  nElemY    = sState.rInner.y;
+  nElemW    = sState.rInner.w;
+  nElemH    = sState.rInner.h;
+
+  // --------------------------------------------------------------------------
+  // Focus
+  // --------------------------------------------------------------------------
+
+  #if (GSLC_FEATURE_INPUT)
+
+  if (bFocusEn) {
+    gslc_DrawFrameRect(pGui, sState.rFocus, sState.colFocus);
+  }
+
+  // If we only requested a focus redraw, then we are done
+  if (eRedraw == GSLC_REDRAW_FOCUS) {
+    // Mark the element as no longer requiring redraw
+    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_NONE);
+    return true;
+  }
+
+  #endif // GSLC_FEATURE_INPUT
 
   // --------------------------------------------------------------------------
   // Custom drawing
@@ -3033,79 +3163,27 @@ bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
     return true;
   }
 
-  // --------------------------------------------------------------------------
-  // Init for default drawing
-  // --------------------------------------------------------------------------
-
-  bool      bGlowEn,bGlowing,bGlowNow;
-  int16_t   nElemX,nElemY;
-  uint16_t  nElemW,nElemH;
-
-  nElemX    = pElem->rElem.x;
-  nElemY    = pElem->rElem.y;
-  nElemW    = pElem->rElem.w;
-  nElemH    = pElem->rElem.h;
-  bGlowEn   = pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN; // Does the element support glow state?
-  bGlowing  = gslc_ElemGetGlow(pGui,pElemRef); // Element should be glowing (if enabled)
-  bGlowNow  = bGlowEn & bGlowing; // Element is currently glowing
-  gslc_tsColor colBg = GSLC_COL_BLACK;
 
   // --------------------------------------------------------------------------
   // Background
   // --------------------------------------------------------------------------
 
+
   // Fill in the background
-  gslc_tsRect rElemInner = pElem->rElem;
-  // - If both fill and frame are enabled then contract
-  //   the fill region slightly so that we don't overdraw
-  //   the frame (prevent unnecessary flicker).
-  if ((pElem->nFeatures & GSLC_ELEM_FEA_FILL_EN) && (pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN)) {
-    // NOTE: If the region is already too small to shrink (eg. w=1 or h=1)
-    // then a zero dimension box will be returned by ExpandRect() and not drawn
-    rElemInner = gslc_ExpandRect(rElemInner,-1,-1);
-  }
-  // - This also changes the fill color if selected and glow state is enabled
-  if (pElem->nFeatures & GSLC_ELEM_FEA_FILL_EN) {
-    if (bGlowEn && bGlowing) {
-      colBg = pElem->colElemFillGlow;
+  if (bFillEn) {
+    if (bRoundEn) {
+      gslc_DrawFillRoundRect(pGui, sState.rInner, pGui->nRoundRadius, sState.colInner);
     } else {
-      colBg = pElem->colElemFill;
-    }
-    if (pElem->nFeatures & GSLC_ELEM_FEA_ROUND_EN) {
-      gslc_DrawFillRoundRect(pGui, rElemInner, pGui->nRoundRadius, colBg);
-    } else {
-      gslc_DrawFillRect(pGui, rElemInner, colBg);
-    }
-  } else {
-    colBg = pElem->colElemText;
-    // TODO: If unfilled, then we might need
-    // to redraw the background layer(s)
-  }
-
-  // --------------------------------------------------------------------------
-  // Frame
-  // --------------------------------------------------------------------------
-
-  // Frame the region
-  #ifdef DBG_FRAME
-  // For debug purposes, draw a frame around every element
-  gslc_DrawFrameRect(pGui,pElem->rElem,GSLC_COL_GRAY_DK1);
-  #else
-  if (pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN) {
-    if (pElem->nFeatures & GSLC_ELEM_FEA_ROUND_EN) {
-      gslc_DrawFrameRoundRect(pGui, pElem->rElem, pGui->nRoundRadius, pElem->colElemFrame);
-    } else {
-      gslc_DrawFrameRect(pGui, pElem->rElem, pElem->colElemFrame);
+      gslc_DrawFillRect(pGui, sState.rInner, sState.colInner);
     }
   }
-  #endif
 
 
   // --------------------------------------------------------------------------
   // Handle special element types
   // --------------------------------------------------------------------------
   if (pElem->nType == GSLC_TYPE_LINE) {
-    gslc_DrawLine(pGui,nElemX,nElemY,nElemX+nElemW-1,nElemY+nElemH-1,pElem->colElemFill);
+    gslc_DrawLine(pGui,nElemX,nElemY,nElemX+nElemW-1,nElemY+nElemH-1,sState.colInner);
   }
 
 
@@ -3115,12 +3193,36 @@ bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
 
   // Draw any images associated with element
   if (pElem->sImgRefNorm.eImgFlags != GSLC_IMGREF_NONE) {
-    if ((bGlowEn && bGlowing) && (pElem->sImgRefGlow.eImgFlags != GSLC_IMGREF_NONE)) {
-      gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefGlow);
+    if ((bGlowing) && (pElem->sImgRefGlow.eImgFlags != GSLC_IMGREF_NONE)) {
+      bOk = gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefGlow);
     } else {
-      gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefNorm);
+      // Note that when we are focused we are highlighting the frame
+      // so we just draw the normal image.
+      bOk = gslc_DrvDrawImage(pGui,nElemX,nElemY,pElem->sImgRefNorm);
+    }
+    if (!bOk) {
+      GSLC_DEBUG2_PRINT("ERROR: DrvDrawImage failed\n","");
     }
   }
+
+  // --------------------------------------------------------------------------
+  // Frame
+  // --------------------------------------------------------------------------
+
+  // Frame the region
+  #ifdef DBG_FRAME
+  // For debug purposes, draw a frame around every element
+  gslc_DrawFrameRect(pGui,sState.rFull,GSLC_COL_GRAY_DK1);
+  #else
+
+  if (bFrameEn) {
+    if (bRoundEn) {
+      gslc_DrawFrameRoundRect(pGui, sState.rFull, pGui->nRoundRadius, sState.colFrm);
+    } else {
+      gslc_DrawFrameRect(pGui, sState.rFull, sState.colFrm);
+    }
+  }
+  #endif
 
   // --------------------------------------------------------------------------
   // Text overlays
@@ -3128,12 +3230,13 @@ bool gslc_ElemDrawByRef(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
 
   // Draw text string if defined
   if (pElem->pStrBuf) {
-    gslc_tsColor  colTxt    = (bGlowNow)? pElem->colElemTextGlow : pElem->colElemText;
     int8_t        nMarginX  = pElem->nTxtMarginX;
     int8_t        nMarginY  = pElem->nTxtMarginY;
 
-    gslc_DrawTxtBase(pGui, pElem->pStrBuf, pElem->rElem, pElem->pTxtFont, pElem->eTxtFlags,
-      pElem->eTxtAlign, colTxt, colBg, nMarginX, nMarginY);
+    // Note that we use the "inner" region for text placement to
+    // avoid overlapping any frame
+    gslc_DrawTxtBase(pGui, pElem->pStrBuf, sState.rInner, pElem->pTxtFont, pElem->eTxtFlags,
+      pElem->eTxtAlign, sState.colTxtFore, sState.colTxtBack, nMarginX, nMarginY);
   }
 
   // --------------------------------------------------------------------------
@@ -3162,18 +3265,29 @@ void gslc_ElemSetFillEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bFillEn)
   gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
 }
 
-
 void gslc_ElemSetFrameEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bFrameEn)
 {
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
   if (!pElem) return;
 
+  // Capture current element sizing
+  int8_t nResizeOld,nResizeNew;
+  nResizeOld = gslc_ElemCalcResizeForFocus(pGui,pElemRef);
+
+  // Update the attribute
   if (bFrameEn) {
     pElem->nFeatures |= GSLC_ELEM_FEA_FRAME_EN;
   } else {
     pElem->nFeatures &= ~GSLC_ELEM_FEA_FRAME_EN;
   }
+
+  // Determine any change in sizing and update the element
+  nResizeNew = gslc_ElemCalcResizeForFocus(pGui,pElemRef);
+  gslc_ElemGrowRect(pGui,pElemRef,(nResizeNew-nResizeOld));
+
+  // Mark for redraw
   gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+
 }
 
 void gslc_ElemSetRoundEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bRoundEn)
@@ -3314,10 +3428,17 @@ void gslc_ElemSetTxtStr(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,const char* pS
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
   if (!pElem) return;
 
+  // Check for read-only status (in case the string was
+  // defined in Flash/PROGMEM)
+  if (pElem->nStrBufMax == 0) {
+    // String was read-only, so abort now
+    return;
+  }
+
   // To avoid unnecessary redraw / flicker, only a change in
   // the text content will drive a redraw
 
-  if (strncmp(pElem->pStrBuf,pStr,pElem->nStrBufMax-1)) {
+  if (strncmp(pElem->pStrBuf,pStr,pElem->nStrBufMax)) {
     gslc_StrCopy(pElem->pStrBuf,pStr,pElem->nStrBufMax);
     gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_INC);
   }
@@ -3392,42 +3513,58 @@ void gslc_ElemSetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
   // Update the redraw flag
   gslc_teElemRefFlags eFlags = pElemRef->eElemFlags;
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
-  switch (eRedraw) {
-    case GSLC_REDRAW_NONE:
-      eFlags = (eFlags & ~GSLC_ELEMREF_REDRAW_MASK) | GSLC_ELEMREF_REDRAW_NONE;
-      break;
-    case GSLC_REDRAW_FULL:
-      eFlags = (eFlags & ~GSLC_ELEMREF_REDRAW_MASK) | GSLC_ELEMREF_REDRAW_FULL;
-      // Mark the region as invalidated
-      // - Only invalidate if the element is visible on the screen
-      if (gslc_ElemGetOnScreen(pGui,pElemRef)) {
-        gslc_InvalidateRgnAdd(pGui, pElem->rElem);
-      }
-      break;
-    case GSLC_REDRAW_INC:
-      eFlags = (eFlags & ~GSLC_ELEMREF_REDRAW_MASK) | GSLC_ELEMREF_REDRAW_INC;
-      // Mark the region as invalidated
-      // - Only invalidate if the element is visible on the screen
-      if (gslc_ElemGetOnScreen(pGui,pElemRef)) {
-        gslc_InvalidateRgnAdd(pGui, pElem->rElem);
-      }
-      break;
+
+  // Current redraw state in element flags
+  gslc_teElemRefFlags eFlagsRedrawOld = (eFlags & GSLC_ELEMREF_REDRAW_MASK);
+
+  // Current element flags with redraw state cleared
+  gslc_teElemRefFlags eFlagsWoRedraw = (eFlags & ~GSLC_ELEMREF_REDRAW_MASK);
+
+  if (eRedraw == GSLC_REDRAW_NONE) {
+    // If a GSLC_REDRAW_NONE is assigned, override any existing
+    // redraw state. This is often used to clear a redraw state
+    // once a redraw has been completed.
+    eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_NONE;
+  } else {
+
+    // Indicate that at least one element requires redraw
+    pGui->bRedrawNeeded = true;
+
+    // For all cases where a new redraw has been requested,
+    // only update the redraw state if we are increasing
+    // the level of redraw.
+    switch (eRedraw) {
+      case GSLC_REDRAW_FULL:
+        eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_FULL;
+        break;
+      case GSLC_REDRAW_INC:
+        if (eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_FULL) {
+          // Skip the update as a larger redraw was already requested
+        } else {
+          eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_INC;
+        }
+        break;
+      case GSLC_REDRAW_FOCUS:
+        if ((eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_FULL) ||
+            (eFlagsRedrawOld == GSLC_ELEMREF_REDRAW_INC)) {
+          // Skip the update as a larger redraw was already requested
+        } else {
+          eFlags = eFlagsWoRedraw | GSLC_ELEMREF_REDRAW_FOCUS;
+        }
+        break;
+      case GSLC_REDRAW_NONE:
+        // Will not enter this case as it is trapped earlier
+        break;
+    }
+    // Mark the region as invalidated
+    // - Only invalidate if the element is visible on the screen
+    if (gslc_ElemGetOnScreen(pGui,pElemRef)) {
+      gslc_InvalidateRgnAdd(pGui, pElem->rElem);
+    }
   }
 
-  // Handle request for update of redraw state
-  // - We permit the new state to be assigned except in the
-  //   case wherein we are currently pending a full redraw
-  //   but an incremental redraw has been requested. In that
-  //   case we leave the full redraw request pending.
-  if (eRedraw == GSLC_REDRAW_INC) {
-    if ((eFlags & GSLC_ELEMREF_REDRAW_MASK) == GSLC_ELEMREF_REDRAW_FULL) {
-      // Don't update redraw state; leave it as full redraw pending
-    } else {
-      pElemRef->eElemFlags = eFlags;
-    }
-  } else {
-    pElemRef->eElemFlags = eFlags;
-  }
+  // Update the redraw state
+  pElemRef->eElemFlags = eFlags;
 
 #if (GSLC_FEATURE_COMPOUND)
   // In the case of compound elements, optionally propagate the
@@ -3446,6 +3583,7 @@ void gslc_ElemSetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_teRedrawT
 
 gslc_teRedrawType gslc_ElemGetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 {
+  (void)pGui; // Unused
   if (pElemRef == NULL) {
     static const char GSLC_PMEM FUNCSTR[] = "ElemGetRedraw";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -3459,6 +3597,8 @@ gslc_teRedrawType gslc_ElemGetRedraw(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
       return GSLC_REDRAW_FULL;
     case GSLC_ELEMREF_REDRAW_INC:
       return GSLC_REDRAW_INC;
+    case GSLC_ELEMREF_REDRAW_FOCUS:
+      return GSLC_REDRAW_FOCUS;
   }
   // Should not reach here
   return GSLC_REDRAW_NONE;
@@ -3491,6 +3631,113 @@ bool gslc_ElemGetGlow(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
   }
   return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_GLOWING);
 }
+
+void gslc_ElemSetFocus(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bFocused)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  (void)bFocused; // Unused
+  return;
+#else
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemSetFocus";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return;
+  }
+  // Only change focus state if enabled
+  if (gslc_ElemGetFocusEn(pGui, pElemRef)) {
+    bool bFocusedOld = gslc_ElemGetFocus(pGui, pElemRef);
+    gslc_SetElemRefFlag(pGui, pElemRef, GSLC_ELEMREF_FOCUSED, (bFocused) ? GSLC_ELEMREF_FOCUSED : 0);
+
+    if (bFocused != bFocusedOld) {
+      gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_FOCUS);
+    }
+  }
+#endif // GSLC_FEATURE_INPUT
+}
+
+bool gslc_ElemGetFocus(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  return false;
+#else
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemGetFocus";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_FOCUSED);
+#endif // GSLC_FEATURE_INPUT
+}
+
+/// \todo Doc
+bool gslc_ElemGetEditEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  return false;
+#else
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return false;
+
+  return pElem->nFeatures & GSLC_ELEM_FEA_EDIT_EN;
+#endif // GSLC_FEATURE_INPUT
+}
+
+
+void gslc_ElemSetEdit(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bEditing)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  (void)bEditing; // Unused
+  return;
+#else
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemSetEdit";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return;
+  }
+  // Only change edit state if enabled
+  gslc_tsElem* pElem = gslc_GetElemFromRef(pGui,pElemRef);
+  if (pElem->nFeatures & GSLC_ELEM_FEA_EDIT_EN) {
+    gslc_SetElemRefFlag(pGui, pElemRef, GSLC_ELEMREF_EDITING, (bEditing) ? GSLC_ELEMREF_EDITING : 0);
+    gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_INC);
+  }
+
+  // Update the system edit mode flag
+  if (bEditing) {
+    if (pGui->nInputMode == GSLC_INPUTMODE_EDIT) {
+      GSLC_DEBUG_PRINT("ERROR: ElemSetEdit(edit=1) when GUI already in edit mode\n","");
+    } else {
+      pGui->nInputMode = GSLC_INPUTMODE_EDIT;
+    }
+  } else {
+    pGui->nInputMode = GSLC_INPUTMODE_NAV;
+  }
+#endif // GSLC_FEATURE_INPUT
+}
+
+bool gslc_ElemGetEdit(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  return false;
+#else
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemGetEdit";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return false;
+  }
+  return gslc_GetElemRefFlag(pGui,pElemRef,GSLC_ELEMREF_EDITING);
+#endif // GSLC_FEATURE_INPUT
+}
+
 
 void gslc_ElemSetVisible(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bVisible)
 {
@@ -3563,6 +3810,55 @@ bool gslc_ElemGetGlowEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
   return pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN;
 }
 
+/// \todo Doc
+bool gslc_ElemGetFocusEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  return false;
+#else
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return false;
+
+  return pElem->nFeatures & GSLC_ELEM_FEA_FOCUS_EN;
+#endif // GSLC_FEATURE_INPUT
+}
+
+/// \todo Doc
+void gslc_ElemSetFocusEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bFocusEn)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pElemRef; // Unused
+  (void)bFocusEn; // Unused
+#else
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (!pElem) return;
+
+  // Capture current element sizing
+  int8_t nResizeOld,nResizeNew;
+  nResizeOld = gslc_ElemCalcResizeForFocus(pGui,pElemRef);
+
+  // Update the attribute
+  if (bFocusEn) {
+    pElem->nFeatures |= GSLC_ELEM_FEA_FOCUS_EN;
+  } else {
+    pElem->nFeatures &= ~GSLC_ELEM_FEA_FOCUS_EN;
+  }
+
+  // Determine any change in sizing and update the element
+  nResizeNew = gslc_ElemCalcResizeForFocus(pGui,pElemRef);
+  gslc_ElemGrowRect(pGui,pElemRef,(nResizeNew-nResizeOld));
+
+  // Mark for redraw
+  gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
+
+#endif // GSLC_FEATURE_INPUT
+}
+
+
+
 void gslc_ElemSetClickEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bClickEn)
 {
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
@@ -3573,6 +3869,14 @@ void gslc_ElemSetClickEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bClickEn
   } else {
     pElem->nFeatures &= ~GSLC_ELEM_FEA_CLICK_EN;
   }
+
+  #if (GSLC_FEATURE_INPUT)
+  // For now, associate accepting click events as also accepting focus
+  // We call this API since it also takes care of resizing 
+  // element if necessary.
+  gslc_ElemSetFocusEn(pGui,pElemRef,bClickEn);
+  #endif // GSLC_FEATURE_INPUT
+
   // No need to call ElemSetRedraw() as we aren't changing a visual characteristic
 }
 
@@ -3607,7 +3911,7 @@ void gslc_ElemSetStyleFrom(gslc_tsGui* pGui,gslc_tsElemRef* pElemRefSrc,gslc_tsE
   pElemDest->colElemFrameGlow = pElemSrc->colElemFrameGlow;
 
   // eRedraw
-#ifdef GLSC_COMPOUND
+#if (GSLC_FEATURE_COMPOUND)
   pElemDest->pElemRefParent   = pElemSrc->pElemRefParent;
 #endif
 
@@ -3633,6 +3937,154 @@ void gslc_ElemSetStyleFrom(gslc_tsGui* pGui,gslc_tsElemRef* pElemRefSrc,gslc_tsE
 
   gslc_ElemSetRedraw(pGui,pElemRefDest,GSLC_REDRAW_FULL);
 }
+
+// Calculate the expansion required for the element
+// rect to allow for focus and/or frame modes.
+//
+// In some cases, it may be necessary to expand the
+// size of an element to accommodate additional levels
+// of framing:
+// - A Focus rect. If external inputs are enabled, a
+//   focus rect needs to be drawn around the element,
+//   meaning that expansion will be required.
+// - A Frame rect. If a frame is requested and the
+//   element has been marked as NoShrink (eg. image button),
+//   then additional expansion is required.
+int8_t gslc_ElemCalcResizeForFocus(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef)
+{
+  int8_t nDelta = 0;
+
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  uint16_t nFeatures = pElem->nFeatures;
+
+  bool bFrameEn = nFeatures & GSLC_ELEM_FEA_FRAME_EN; // Does the element require a frame?
+  bool bFocusEn = nFeatures & GSLC_ELEM_FEA_FOCUS_EN; // Does the element support focus state?
+  bool bNoShrink = nFeatures & GSLC_ELEM_FEA_NOSHRINK; // Does the element disable shrinking?
+  if (bFrameEn) {
+    if (bNoShrink) {
+      // If a frame is requested but the element doesn't support shrinking
+      // of its contents (eg. because the entire element rect is occupied by
+      // an image), then we must increase the element size to allow for a
+      // frame on the outside.
+      nDelta += 1;
+    } else {
+      // If a frame is requested, but the element can support shrinking,
+      // then we use the original element size for the frame and then
+      // perform all remaining drawing with a shrunk region inside the frame.
+    }
+  }
+  if (bFocusEn) {
+    // If a focus indicator is requested, we always increase the element
+    // size to allow for a focus indicator on the outside. This may be
+    // in addition to a frame.
+    nDelta += 1;
+  }
+
+  return nDelta;
+}
+
+// Adjust the size of an element's rect by an incremental amount
+// - This is generally used to adjust element dimensions when
+//   enabling focus or frame modes on an element.
+void gslc_ElemGrowRect(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, int8_t nDelta)
+{
+  // If we need to resize the element region, update it now
+  if (nDelta != 0) {
+    gslc_tsRect rElem = gslc_ElemGetRect(pGui,pElemRef);
+    rElem = gslc_ExpandRect(rElem,nDelta,nDelta);
+    gslc_ElemSetRect(pGui, pElemRef, rElem);
+  }
+}
+
+void gslc_ResetRectState(gslc_tsRectState *pState)
+{
+  if (!pState) {
+    return;
+  }
+  pState->rFocus = (gslc_tsRect){0,0,0,0};
+  pState->rFull = (gslc_tsRect){0,0,0,0};
+  pState->rInner = (gslc_tsRect){0,0,0,0};
+  pState->colFocus = GSLC_COL_BLACK;
+  pState->colFrm = GSLC_COL_BLACK;
+  pState->colInner = GSLC_COL_BLACK;
+  pState->colBack = GSLC_COL_BLACK;
+  pState->colTxtFore = GSLC_COL_WHITE;
+  pState->colTxtBack = GSLC_COL_BLACK;
+};
+
+void gslc_ElemCalcRectState(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, gslc_tsRectState* pState)
+{
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  uint16_t nFeatures = pElem->nFeatures;
+  gslc_tsRect rElem = pElem->rElem;
+
+  bool bFillEn   = nFeatures & GSLC_ELEM_FEA_FILL_EN;
+  bool bFrameEn  = nFeatures & GSLC_ELEM_FEA_FRAME_EN;
+  bool bGlowEn   = nFeatures & GSLC_ELEM_FEA_GLOW_EN; // Does the element support glow state?
+  bool bFocusEn  = nFeatures & GSLC_ELEM_FEA_FOCUS_EN; // Does the element support focus state?
+  bool bGlowing  = bGlowEn && gslc_ElemGetGlow(pGui,pElemRef); // Element should be glowing (if enabled)
+  bool bFocused  = bFocusEn && gslc_ElemGetFocus(pGui,pElemRef); // Element should be focused (if enabled)
+  bool bEditing  = gslc_ElemGetEdit(pGui,pElemRef);
+
+  // Initialize the return struct
+  gslc_ResetRectState(pState);
+
+  #if (GSLC_FEATURE_INPUT)
+  // Calculate the regions
+  if (bFocusEn) {
+    // Focus enabled
+    // - If the focus was enabled, then the element's rect already
+    //   accounts for the focus frame (this expansion was done
+    //   in gslc_ElemResizeForFocus)
+    pState->rFocus = rElem;
+    // Now adjust for all following rect calcs
+    rElem = gslc_ExpandRect(rElem,-1,-1);
+  }
+  #endif // GSLC_FEATURE_INPUT
+
+  if (bFrameEn) {
+    // If a frame is enabled, shrink the inner region
+    pState->rFull = rElem;
+    pState->rInner = gslc_ExpandRect(rElem,-1,-1);
+  } else {
+    pState->rFull = rElem; // TODO: Should this be different?
+    pState->rInner = rElem;
+  }
+
+  // Calculate the focus rect color
+  #if (GSLC_FEATURE_INPUT)
+  if (bEditing) {
+    pState->colFocus = pGui->colFocusEdit;
+  } else if (bFocused) {
+    pState->colFocus = pGui->colFocus;
+  } else {
+    pState->colFocus = pGui->colFocusNone;
+  }
+  #endif // GSLC_FEATURE_INPUT
+
+  // Calculate the element colors
+  pState->colBack = pElem->colElemFill;
+  if (bGlowing) {
+    pState->colFrm = pElem->colElemFrameGlow;
+    pState->colInner = pElem->colElemFillGlow;
+    pState->colTxtFore = pElem->colElemTextGlow;
+  } else {
+    pState->colFrm = pElem->colElemFrame;
+    pState->colInner = pElem->colElemFill;
+    pState->colTxtFore = pElem->colElemText;
+  }
+
+  // Calculate text background color
+  if (bFillEn) {
+    pState->colTxtBack = pState->colInner;
+  } else {
+    // To indicate transparent mode, we set text and background to same color
+    pState->colTxtBack = pState->colTxtFore;
+  }
+
+}
+
+
 
 /* UNUSED
 void gslc_ElemSetEventFunc(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,GSLC_CB_EVENT funcCb)
@@ -3664,6 +4116,9 @@ void gslc_ElemSetTickFunc(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,GSLC_CB_TICK
 
 bool gslc_ElemOwnsCoord(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,int16_t nX,int16_t nY,bool bOnlyClickEn)
 {
+  // If no element was provided, return gracefully
+  if (!pElemRef) return false;
+
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
   if (!pElem) return false;
 
@@ -3682,9 +4137,18 @@ bool gslc_ElemOwnsCoord(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,int16_t nX,int
 
 void gslc_CollectInput(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTouch* pEventTouch)
 {
+  (void)pGui; // Unused
 #if !(GSLC_FEATURE_INPUT)
+  (void)pCollect; // Unused
+  (void)pEventTouch; // Unused
   return;
 #else
+  if (pCollect == NULL) {
+    return;
+  }
+  if (pEventTouch == NULL) {
+    return;
+  }
   // Fetch the data members of the touch event
   gslc_teTouch      eTouch    = pEventTouch->eTouch;
   int16_t           nInputInd = pEventTouch->nX;      // nX overloaded as element index
@@ -3705,10 +4169,7 @@ void gslc_CollectInput(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
   int16_t           nY = 0;
 
   // Fetch the item currently being tracked (if any)
-  pTrackedRefOld = gslc_CollectGetElemRefTracked(pGui,pCollect);
-
-  // Reset the in-tracked flag
-  bool  bInTracked = false;
+  pTrackedRefOld = pGui->pFocusElemRef;
 
   // For direct input events, eTouch will already be fully defined with DOWN/UP + IN/OUT
   if (eTouch == GSLC_TOUCH_FOCUS_ON) {
@@ -3720,7 +4181,7 @@ void gslc_CollectInput(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
     // - We shouldn't really enter a "Touch Down" event
     //   with an element still marked as being tracked
     if (pTrackedRefOld != NULL) {
-      gslc_ElemSetGlow(pGui,pTrackedRefOld,false);
+      gslc_ElemSetFocus(pGui,pTrackedRefOld,false);
     }
 
     // Determine the new element to start tracking
@@ -3728,65 +4189,87 @@ void gslc_CollectInput(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
 
     if (pTrackedRefNew == NULL) {
       // Didn't find an element, so clear the tracking reference
-
-      gslc_CollectSetElemTracked(pGui,pCollect,NULL);
+      pGui->pFocusElemRef = NULL;
     } else {
       // Found an element, so mark it as being the tracked element
 
       // Set the new tracked element reference
-      gslc_CollectSetElemTracked(pGui,pCollect,pTrackedRefNew);
+      pGui->pFocusElemRef = pTrackedRefNew;
       if (pTrackedRefNew->pElem == NULL) {
         return;
       }
 
-      // Start glow on new element
-      gslc_ElemSetGlow(pGui,pTrackedRefNew,true);
-
-      // Notify element for optional custom handling
-      // - We do this after we have determined which element should
-      //   receive the touch tracking
-      eTouch = GSLC_TOUCH_DOWN_IN;
-      //gslc_ElemSendEventTouch(pGui,pTrackedRefNew,eTouch,nX,nY);
-
+      // Start focus on new element
+      gslc_ElemSetFocus(pGui,pTrackedRefNew,true);
     }
 
-  } else if ((eTouch == GSLC_TOUCH_FOCUS_OFF) || (eTouch == GSLC_TOUCH_FOCUS_SELECT)) {
+  } else if (eTouch == GSLC_TOUCH_FOCUS_OFF) {
+
     // ---------------------------------
     // Touch Up Event
     // ---------------------------------
 
     if (pTrackedRefOld != NULL) {
-      // Are we still over tracked element?
-      if (eTouch == GSLC_TOUCH_FOCUS_OFF) {
-        bInTracked = false;
-      } else if (eTouch == GSLC_TOUCH_FOCUS_SELECT) {
-        bInTracked = true;
-      }
 
-      if (!bInTracked) {
-        // Released not over tracked element
-        eTouch = GSLC_TOUCH_UP_OUT;
-        //gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
-      } else {
-        // Notify original tracked element for optional custom handling
-        eTouch = GSLC_TOUCH_UP_IN;
-        // FIXME: Do we really want to change the eTouch type here?
-        // Perhaps this is the best way to reuse the existing touch handler in the element
-        nX = 0; // Arbitrary
-        nY = 0; // Arbitrary
-        gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
-      }
-
-      // Clear glow state
+      // Clear focus state
       if (pTrackedRefOld->pElem == NULL) {
         return;
       }
-      gslc_ElemSetGlow(pGui,pTrackedRefOld,false);
-
+      gslc_ElemSetFocus(pGui,pTrackedRefOld,false);
     }
 
     // Clear the element tracking state
-    gslc_CollectSetElemTracked(pGui,pCollect,NULL);
+    pGui->pFocusElemRef = NULL;
+
+  } else if (eTouch == GSLC_TOUCH_FOCUS_PRESELECT) {
+    // ---------------------------------
+    // PRESELECT -> Glow before Select
+    // ---------------------------------
+    //xxx GSLC_DEBUG_PRINT("CollectInput: TOUCH_FOCUS_PRESELECT\n",""); //xxx
+
+    if (pTrackedRefOld != NULL) {
+
+      // Notify original tracked element for optional custom handling
+      // If the element is not editable, then mimic a touch event,
+      // otherwise, pass on the focus select event
+      if (!gslc_ElemGetEditEn(pGui,pTrackedRefOld)) {
+        // Start the glow state
+        gslc_ElemSetGlow(pGui,pTrackedRefOld,true);
+        eTouch = GSLC_TOUCH_DOWN_IN;
+        // TODO: Do we really want to change the eTouch type here?
+        //       - Perhaps this is the best way to reuse the existing touch handler in the element
+        // Here we are mimicking a touch event within the element
+        nX = 0; // Arbitrary
+        nY = 0; // Arbitrary
+      }
+      gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
+
+    }
+
+  } else if (eTouch == GSLC_TOUCH_FOCUS_SELECT) {
+    // ---------------------------------
+    // SELECT -> Select or Touch Up Event
+    // ---------------------------------
+
+    if (pTrackedRefOld != NULL) {
+
+      // Notify original tracked element for optional custom handling
+      // If the element is not editable, then mimic a touch event,
+      // otherwise, pass on the focus select event
+      if (!gslc_ElemGetEditEn(pGui,pTrackedRefOld)) {
+        eTouch = GSLC_TOUCH_UP_IN;
+        // TODO: Do we really want to change the eTouch type here?
+        //       - Perhaps this is the best way to reuse the existing touch handler in the element
+        // Here we are mimicking a touch event within the element
+        nX = 0; // Arbitrary
+        nY = 0; // Arbitrary
+      }
+      gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
+
+      // End the glow state
+      gslc_ElemSetGlow(pGui,pTrackedRefOld,false);
+
+    }
 
   } else if ((eTouch == GSLC_TOUCH_SET_REL) || (eTouch == GSLC_TOUCH_SET_ABS)) {
     // ---------------------------------
@@ -3794,6 +4277,9 @@ void gslc_CollectInput(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
     // ---------------------------------
     nX = 0; // Unused
     nY = nInputVal; // Relative or Absolute value
+    if (pTrackedRefOld == NULL) {
+      return; //xxx Ignore the SET_REL if nothing in focus!
+    }
     gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
   }
 #endif // GSLC_FEATURE_INPUT
@@ -3809,9 +4295,12 @@ void gslc_CollectTouch(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
 
   gslc_tsElemRef*   pTrackedRefOld = NULL;
   gslc_tsElemRef*   pTrackedRefNew = NULL;
+  int16_t nTrackedIndNew = GSLC_IND_NONE;
 
   // Fetch the item currently being tracked (if any)
   pTrackedRefOld = gslc_CollectGetElemRefTracked(pGui,pCollect);
+
+
 
   // Reset the in-tracked flag
   bool  bInTracked = false;
@@ -3821,6 +4310,11 @@ void gslc_CollectTouch(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
     // Touch Down Event
     // ---------------------------------
 
+    // Determine the new element to start tracking
+    // - Also get the index of the element. This is saved into Collect->nElemIndTracked
+    //   so that we can later support auto-focus upon TOUCH_UP_IN events.
+    pTrackedRefNew = gslc_CollectFindElemFromCoord(pGui,pCollect,nX,nY,&nTrackedIndNew);
+
     // End glow on previously tracked element (if any)
     // - We shouldn't really enter a "Touch Down" event
     //   with an element still marked as being tracked
@@ -3828,17 +4322,53 @@ void gslc_CollectTouch(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
       gslc_ElemSetGlow(pGui,pTrackedRefOld,false);
     }
 
-    // Determine the new element to start tracking
-    pTrackedRefNew = gslc_CollectFindElemFromCoord(pGui,pCollect,nX,nY);
+    #if (GSLC_FEATURE_INPUT)
+    // Handle any existing focus state
+    if (pGui->pFocusElemRef != NULL) {
+      // Upon a physical touch event:
+      // - If we happen to be in a focus "edit" mode, then leave the
+      //   edit mode and return to nav mode.
+      gslc_ElemSetEdit(pGui,pGui->pFocusElemRef,false);
+
+      bool bDoFocusOff = true;
+      #if (GSLC_FEATURE_FOCUS_ON_TOUCH)
+        // Since we will be focusing on an element as a result of a TOUCH_UP_IN
+        // event, we don't want to de-focus and reapply focus if they are the
+        // same element.
+        // NOTE: If the TOUCH_DOWN_IN event turns into a TOUCH_UP_OUT case
+        //       then it is OK since we will just retain the existing focus.
+        if (pGui->pFocusElemRef == pTrackedRefNew) {
+          bDoFocusOff = false;
+        }
+      #else
+        // If we are not supporting FOCUS_ON_TOUCH, then we always
+        // remove focus on TOUCH_DOWN events.
+      #endif // FOCUS_ON_TOUCH
+
+      if (bDoFocusOff) {
+        void* pvFocusPage = (void*)(pGui->pFocusPage);
+
+        gslc_tsEventTouch sEventTouchTmp;
+        void*             pvData = (void*)(&sEventTouchTmp);
+        gslc_tsEvent      sEventTmp;
+        sEventTouchTmp.eTouch = GSLC_TOUCH_FOCUS_OFF;
+        sEventTouchTmp.nX = GSLC_IND_NONE;
+        sEventTouchTmp.nY = 0; // Unused
+
+        sEventTmp = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
+        gslc_PageEvent(pGui,sEventTmp);
+      }
+    }
+    #endif // GSLC_FEATURE_INPUT
 
     if (pTrackedRefNew == NULL) {
       // Didn't find an element, so clear the tracking reference
-      gslc_CollectSetElemTracked(pGui,pCollect,NULL);
+      gslc_CollectSetElemTracked(pGui,pCollect,NULL,GSLC_IND_NONE);
     } else {
       // Found an element, so mark it as being the tracked element
 
       // Set the new tracked element reference
-      gslc_CollectSetElemTracked(pGui,pCollect,pTrackedRefNew);
+      gslc_CollectSetElemTracked(pGui,pCollect,pTrackedRefNew,nTrackedIndNew);
 
       // Start glow on new element
       gslc_ElemSetGlow(pGui,pTrackedRefNew,true);
@@ -3865,18 +4395,31 @@ void gslc_CollectTouch(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
         eTouch = GSLC_TOUCH_UP_OUT;
         gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
       } else {
+
+        #if (GSLC_FEATURE_INPUT)
+        #if (GSLC_FEATURE_FOCUS_ON_TOUCH)
+        // Now if we support INPUT mode, then we want to change the focus to be on this element
+        // - This would facilitate the combination of touch and input events
+        if (gslc_ElemGetFocusEn(pGui,pTrackedRefOld)) {
+
+          gslc_FocusSetToTrackedElem(pGui,pCollect);
+
+        }
+        #endif // FOCUS_ON_TOUCH
+        #endif // GSLC_FEATURE_INPUT
+
         // Notify original tracked element for optional custom handling
         eTouch = GSLC_TOUCH_UP_IN;
         gslc_ElemSendEventTouch(pGui,pTrackedRefOld,eTouch,nX,nY);
-      }
+      } // bInTracked
 
       // Clear glow state
       gslc_ElemSetGlow(pGui,pTrackedRefOld,false);
 
     }
 
-    // Clear the element tracking state
-    gslc_CollectSetElemTracked(pGui,pCollect,NULL);
+    gslc_CollectSetElemTracked(pGui,pCollect,NULL,GSLC_IND_NONE);
+
 
   } else if (eTouch == GSLC_TOUCH_MOVE) {
     // ---------------------------------
@@ -3906,7 +4449,7 @@ void gslc_CollectTouch(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsEventTou
 
         // Ensure it is glowing
         gslc_ElemSetGlow(pGui,pTrackedRefOld,true);
-      }
+      } // bInTracked
 
     }
 
@@ -3968,10 +4511,319 @@ bool gslc_CollectTouchCompound(void* pvGui, void* pvElemRef, gslc_teTouch eTouch
 #endif // GSLC_FEATURE_COMPOUND
 
 
-// FIXME: pPage UNUSED with new PageStack implementation
-void gslc_TrackInput(gslc_tsGui* pGui,gslc_tsPage* pPage,gslc_teInputRawEvent eInputEvent,int16_t nInputVal)
+bool gslc_ElemCanFocus(gslc_tsGui* pGui,gslc_tsCollect* pCollect,int16_t nElemInd)
 {
 #if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)pCollect; // Unused
+  (void)nElemInd; // Unused
+  return false;
+#else
+  // Get focus capability attribute
+  bool bCanFocus = false;
+  gslc_tsElemRef* pElemRef = &(pCollect->asElemRef[nElemInd]);
+  gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
+  if (pElemRef->eElemFlags != GSLC_ELEMREF_NONE) {
+    if (pElem == NULL) {
+      GSLC_DEBUG2_PRINT("ERROR: eElemFlags not none, but pElem is NULL%s\n","");
+      exit(1); // FATAL FIXME
+    } else {
+      // Check the "accept focus" flag
+      // TODO: Consider whether we should also qualify with the
+      //       FRAME_EN flag. If the frame is not enabled, then
+      //       a focus might not be shown.
+      if (pElem->nFeatures & GSLC_ELEM_FEA_FOCUS_EN) {
+        bCanFocus = true;
+      }
+    }
+  }
+  return bCanFocus;
+#endif // GSLC_FEATURE_INPUT
+}
+
+// Return element reference of currently-focused element or NULL for none
+// PRE:
+// - pGui->pFocusPage
+// - pGui->nFocusElemInd
+gslc_tsElemRef* gslc_FocusElemGet(gslc_tsGui* pGui)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  return NULL;
+#else
+  gslc_tsPage* pFocusPage = pGui->pFocusPage;
+  if (!pFocusPage) {
+    return NULL;
+  }
+  // TODO: Error checking
+  gslc_tsCollect* pCollect = &(pFocusPage->sCollect);
+  gslc_tsElemRef* pElemRef = &(pCollect->asElemRef[pGui->nFocusElemInd]);
+  return pElemRef;
+#endif // GSLC_FEATURE_INPUT
+}
+
+// Update the focus to another element
+// - Clears focus on existing element
+// - Identifies default element if new page (nElemInd=GSLC_IND_NONE)
+// - Sets focus on new element (if bFocus=true)
+// - Updates tracking element reference
+void gslc_FocusElemIndSet(gslc_tsGui* pGui,int16_t nPageInd,int16_t nElemInd,bool bFocus)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)nPageInd; // Unused
+  (void)nElemInd; // Unused
+  (void)bFocus; // Unused
+  return;
+#else
+  gslc_tsElemRef* pElemRef = NULL;
+
+  // Unfocus existing element (if one is enabled)
+  pElemRef = gslc_FocusElemGet(pGui);
+
+  if (pElemRef) {
+    gslc_ElemSetFocus(pGui,pElemRef,false);
+    // Reset the tracking
+    pGui->pFocusElemRef = NULL; //zzz
+  }
+
+  // Focus new element (if enabled) and set attributes
+  if (bFocus) {
+    pGui->nFocusPageInd = nPageInd;
+    pGui->pFocusPage = pGui->apPageStack[nPageInd];
+    if (pGui->pFocusPage == NULL) {
+      // TODO: ERROR handling
+      return;
+    }
+    pGui->nFocusElemInd = nElemInd;
+    pGui->nFocusElemMax = pGui->pFocusPage->sCollect.nElemCnt;
+    if (nElemInd == GSLC_IND_NONE) {
+      // No element was specified, so assign default
+      gslc_FocusElemStep(pGui,true);
+    }
+    // Fetch the focused element reference
+    pElemRef = gslc_FocusElemGet(pGui);
+    if (pElemRef) {
+      // Mark it as focused
+      gslc_ElemSetFocus(pGui,pElemRef,true);
+      // Update the tracking reference
+      pGui->pFocusElemRef = pElemRef; //zzz
+    }
+  } else {
+    // Reset the focus state
+    pGui->nFocusPageInd = GSLC_IND_NONE;
+    pGui->pFocusPage = NULL;
+    pGui->nFocusElemInd = GSLC_IND_NONE;
+    pGui->nFocusElemMax = 0;
+    pGui->pFocusElemRef = NULL;
+  }
+#endif // GSLC_FEATURE_INPUT
+}
+
+// Set the focus to the element indicated
+// - We need to determine nFocusPageInd as the collection
+//   does not currently include the page index
+// - Note that it may be possible that the requested element
+//   is no longer visible on an active page in the stack. In that
+//   case, no focus will be updated.
+void gslc_FocusSetToTrackedElem(gslc_tsGui* pGui,gslc_tsCollect* pCollect)
+{
+#if !(GSLC_FEATURE_INPUT)
+  return;
+#else
+  int16_t nInd = GSLC_IND_NONE;
+  int16_t nElemIndMax = 0;
+  gslc_tsPage* pTmpPage = NULL;
+  int16_t nFoundFocusPageInd = GSLC_IND_NONE;
+  gslc_tsPage* pFoundFocusPage = NULL;
+  bool bFound;
+
+  nElemIndMax = pCollect->nElemCnt;
+
+  // Find the page that matches the collection
+  bFound = false;
+  for (nInd=0;((!bFound)&&(nInd<GSLC_STACK__MAX));nInd++) {
+    pTmpPage = pGui->apPageStack[nInd];
+    if (&(pTmpPage->sCollect) == pCollect) {
+      nFoundFocusPageInd = nInd;
+      pFoundFocusPage = pTmpPage;
+      bFound = true;
+    }
+  }
+  if (!bFound) {
+    // We could not find an active page associated with the
+    // collection, so we skip the remainder of the updates. This may happen
+    // if the original element is no longer visible on a page.
+
+    // Don't proceed to look for the element
+    return;
+  }
+
+  // Set the focus to the tracked element
+  pGui->nFocusPageInd = nFoundFocusPageInd;
+  pGui->pFocusPage = pFoundFocusPage;
+  pGui->nFocusElemInd = pCollect->nElemIndTracked;
+  pGui->nFocusElemMax = nElemIndMax;
+  pGui->pFocusElemRef = pCollect->pElemRefTracked;
+
+  gslc_ElemSetFocus(pGui,pGui->pFocusElemRef,true);
+#endif // GSLC_FEATURE_INPUT
+}
+
+// Advance to the next page in the stack that can accept a focus event
+// POST:
+// - nFocusPageInd
+// - pFocusPage
+// - nFocusElemInd
+// - nFocusElemMax
+void gslc_FocusPageStep(gslc_tsGui* pGui,bool bNext)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)bNext; // Unused
+  return;
+#else
+  bool bFound = false;
+  bool bDone = false;
+  uint8_t nInd = 0;
+  gslc_tsPage* pPage = NULL;
+  int16_t nFocusPageInd = pGui->nFocusPageInd;
+
+  while (!bDone) {
+
+    // Keep track of iterations to detect search exhaustion
+    nInd++;
+
+    if (nFocusPageInd == GSLC_IND_NONE) {
+      // Provide default
+      nFocusPageInd = (bNext)? 0 : GSLC_STACK__MAX-1;
+    } else {
+      if (bNext) {
+        nFocusPageInd = (nFocusPageInd >= GSLC_STACK__MAX-1)? 0 : nFocusPageInd+1;
+      } else {
+        nFocusPageInd = (nFocusPageInd <= 0)? GSLC_STACK__MAX-1 : nFocusPageInd-1;
+      }
+    }
+    // Is this stack layer valid?
+    pPage = pGui->apPageStack[nFocusPageInd];
+    if (pPage) {
+      // Ensure the page layer is active (receiving touch events)
+      if (pGui->abPageStackActive[nFocusPageInd]) {
+        bFound = true;
+        bDone = true;
+      }
+    }
+    // Did we exhaust our search?
+    if (nInd >= GSLC_STACK__MAX) {
+      bDone = true;
+    }
+  }
+
+  if (bFound) {
+    pGui->pFocusPage = pPage;
+    pGui->nFocusPageInd = nFocusPageInd;
+    pGui->nFocusElemMax = pPage->sCollect.nElemCnt;
+    pGui->nFocusElemInd = (bNext)? 0 : pGui->nFocusElemMax-1;
+  } else {
+    pGui->pFocusPage = NULL;
+    pGui->nFocusPageInd = GSLC_IND_NONE;
+    pGui->nFocusElemMax = 0;
+    pGui->nFocusElemInd = GSLC_IND_NONE;
+  }
+#endif // GSLC_FEATURE_INPUT
+}
+
+
+// Advance the focus to the next/previous element
+// Reaching the end/start of the elements on the current page
+// will cause another page to be selected for focus
+// If nFocusElemInd is GSLC_IND_NONE, then start search at default element on page
+// If no element is found, pFocusElem
+//
+// TODO: Cache local vars to avoid excess pGui indirection
+//
+// POST:
+// - nFocusPageInd  (via FocusPageStep)
+// - pFocusPage     (via FocusPageStep)
+// - nFocusElemInd
+// - nFocusElemMax  (via FocusPageStep)
+int16_t gslc_FocusElemStep(gslc_tsGui* pGui,bool bNext)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)bNext; // Unused
+  return GSLC_IND_NONE;
+#else
+  // Ensure we initialize the focused page
+  if (pGui->pFocusPage == NULL) {
+    gslc_FocusPageStep(pGui,bNext);
+  }
+
+  // If no element has been focused yet, provide a default
+  if (pGui->nFocusElemInd == GSLC_IND_NONE) {
+    pGui->nFocusElemInd = (bNext)? 0 : pGui->nFocusElemMax-1;
+  }
+
+  // Save starting element to detect search exhaustion
+  gslc_tsPage* pStartPage = pGui->pFocusPage;
+  int16_t nStartElemInd = pGui->nFocusElemInd;
+
+  // Start search
+  bool bFound = false;
+  bool bDone = false;
+  while (!bDone) {
+    if (bNext) {
+      if (pGui->nFocusElemInd >= pGui->nFocusElemMax-1) {
+        // At end of element list, so increment page (also reset element index)
+        gslc_FocusPageStep(pGui,bNext);
+      } else {
+        // Increment element position
+        pGui->nFocusElemInd++;
+      }
+    } else {
+      if (pGui->nFocusElemInd == 0) {
+        // At start of element list, so decrement page (also reset element index)
+        gslc_FocusPageStep(pGui,bNext);
+      } else {
+        // Decrement element position
+        pGui->nFocusElemInd--;
+      }
+    } // bNext
+
+    // Check if element can be focused
+    // TODO: simplify the params
+    if (gslc_ElemCanFocus(pGui,&(pGui->pFocusPage->sCollect),pGui->nFocusElemInd)) {
+      bDone = true;
+      bFound = true;
+    }
+
+    // Check if exhausted search across all pages in stack
+    // - If we have performed a search and still didn't locate a suitable
+    //   next element by the time we loop back to the starting element
+    //   then terminate the search.
+    // - If the starting element "can focus" then we return that,
+    //   otherwise we indicate no match (GSLC_IND_NONE)
+    if ((pGui->pFocusPage == pStartPage) && (pGui->nFocusElemInd == nStartElemInd)) {
+      bDone = true;
+      if (!bFound) {
+        // Even after wrapping, we haven't found a match, so indicate "no match"
+        pGui->nFocusElemInd = GSLC_IND_NONE;
+      }
+    }
+
+  } // bDone
+
+  // FIXME: What should we return and what params should be updated?
+  return pGui->nFocusElemInd;
+#endif // GSLC_FEATURE_INPUT
+}
+
+void gslc_TrackInput(gslc_tsGui* pGui,gslc_teInputRawEvent eInputEvent,int16_t nInputVal)
+{
+#if !(GSLC_FEATURE_INPUT)
+  (void)pGui; // Unused
+  (void)eInputEvent; // Unused
+  (void)nInputVal; // Unused
   GSLC_DEBUG_PRINT("WARNING: GSLC_FEATURE_INPUT not enabled in GUIslice config%s\n", "");
   return;
 #else
@@ -3984,104 +4836,102 @@ void gslc_TrackInput(gslc_tsGui* pGui,gslc_tsPage* pPage,gslc_teInputRawEvent eI
   gslc_tsEventTouch sEventTouch;
   void*             pvData = (void*)(&sEventTouch);
   gslc_tsEvent      sEvent;
-  int16_t           nFocusInd = GSLC_IND_NONE;
-  gslc_tsPage*      pFocusPage = NULL;
-  gslc_tsCollect*   pCollect = NULL;
 
   gslc_teAction     eAction = GSLC_ACTION_NONE;
   int16_t           nActionVal;
 
-  // Determine the page to accept focus
-  // - For now, use the top enabled page in the stack
-  for (int nStack = 0; nStack < GSLC_STACK__MAX; nStack++) {
-    if (pGui->apPageStack[nStack]) {
-      // Ensure the page layer is active (receiving touch events)
-      if (pGui->abPageStackActive[nStack]) {
-        pFocusPage = pGui->apPageStack[nStack];
-      }
-    }
+
+  if (pGui->nFocusPageInd == GSLC_IND_NONE) {
+    // If we haven't initialized our starting page, do it now
+    // This assigns pFocusPage
+    gslc_FocusPageStep(pGui,true);
   }
-  if (!pFocusPage) {
+
+  void* pvFocusPage = (void*)(pGui->pFocusPage);
+  if (!pvFocusPage) {
     // No pages enabled in the stack, so exit
     return;
   }
 
   gslc_InputMapLookup(pGui,eInputEvent,nInputVal,&eAction,&nActionVal);
+
+  uint8_t nInputMode = pGui->nInputMode;
+
   switch(eAction) {
     case GSLC_ACTION_FOCUS_PREV:
     case GSLC_ACTION_FOCUS_NEXT:
 
-      // Unfocus old element
-      sEventTouch.eTouch = GSLC_TOUCH_FOCUS_OFF;
-      sEventTouch.nX = GSLC_IND_NONE;
-      sEventTouch.nY = 0; // Unused
+      if (nInputMode == GSLC_INPUTMODE_EDIT) {
+        // Edit mode
+        // - NOTE: It is assumed that in edit mode an element is already in focus
+        sEventTouch.eTouch = GSLC_TOUCH_SET_REL;
+        sEventTouch.nX = 0; // Unused
+        sEventTouch.nY = (eAction == GSLC_ACTION_FOCUS_PREV)? -1 : 1;
+        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
+        gslc_PageEvent(pGui,sEvent);
+      } else {
+        // Navigate mode
 
-      sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pFocusPage,pvData);
-      gslc_PageEvent(pGui,sEvent);
+        // Unfocus old element
+        sEventTouch.eTouch = GSLC_TOUCH_FOCUS_OFF;
+        sEventTouch.nX = GSLC_IND_NONE;
+        sEventTouch.nY = 0; // Unused
 
-      // Focus on new element
-      bool bStepNext = (eAction == GSLC_ACTION_FOCUS_NEXT);
-      nFocusInd = gslc_PageFocusStep(pGui,pFocusPage,bStepNext);
-      if (nFocusInd == GSLC_IND_NONE) {
+        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
+        gslc_PageEvent(pGui,sEvent);
+
+        // Focus on new element
+        bool bStepNext = (eAction == GSLC_ACTION_FOCUS_NEXT);
+
+        gslc_FocusElemStep(pGui,bStepNext);
+        pvFocusPage = (void*)(pGui->pFocusPage); // Focus page may have changed
+
+        if (pGui->nFocusElemInd == GSLC_IND_NONE) {
+          break;
+        }
+        sEventTouch.eTouch = GSLC_TOUCH_FOCUS_ON;
+        sEventTouch.nX = pGui->nFocusElemInd;
+        sEventTouch.nY = 0; // Unused
+        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
+        gslc_PageEvent(pGui,sEvent);
+
+      } // nInputMode
+
+      break;
+
+    case GSLC_ACTION_PRESELECT:
+      // TODO: Merge with GSLC_ACTION_SELECT
+
+      // Ensure an element is in focus!
+      if (pGui->nFocusElemInd == GSLC_IND_NONE) {
         break;
-      }
-      sEventTouch.eTouch = GSLC_TOUCH_FOCUS_ON;
-      sEventTouch.nX = nFocusInd;
-      sEventTouch.nY = 0; // Unused
+      } else {
 
-      sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pFocusPage,pvData);
-      gslc_PageEvent(pGui,sEvent);
+        // Select currently focused element
+        sEventTouch.eTouch = GSLC_TOUCH_FOCUS_PRESELECT;
+        sEventTouch.nX = pGui->nFocusElemInd;
+        sEventTouch.nY = 0; // Unused
+        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
+        gslc_PageEvent(pGui,sEvent);
+
+      }
 
       break;
 
     case GSLC_ACTION_SELECT:
 
-      pCollect = &pFocusPage->sCollect;
-      nFocusInd = gslc_CollectGetFocus(pGui, pCollect);
-
       // Ensure an element is in focus!
-      if (nFocusInd == GSLC_IND_NONE) {
+      if (pGui->nFocusElemInd == GSLC_IND_NONE) {
         break;
       } else {
         // Select currently focused element
         sEventTouch.eTouch = GSLC_TOUCH_FOCUS_SELECT;
-        sEventTouch.nX = nFocusInd;
+        sEventTouch.nX = pGui->nFocusElemInd;
         sEventTouch.nY = 0; // Unused
-        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pFocusPage,pvData);
-        gslc_PageEvent(pGui,sEvent);
-
-        // Reapply focus to current element
-        sEventTouch.eTouch = GSLC_TOUCH_FOCUS_ON;
-        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pFocusPage,pvData);
+        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,pvFocusPage,pvData);
         gslc_PageEvent(pGui,sEvent);
       }
 
-      break;
-
-    case GSLC_ACTION_SET_REL:
-    case GSLC_ACTION_SET_ABS:
-
-      pCollect = &pFocusPage->sCollect;
-      nFocusInd = gslc_CollectGetFocus(pGui, pCollect);
-
-      // Ensure an element is in focus!
-      if (nFocusInd == GSLC_IND_NONE) {
-        break;
-      } else {
-        // Change current element
-        if (eAction == GSLC_ACTION_SET_REL) {
-          sEventTouch.eTouch = GSLC_TOUCH_SET_REL;
-          sEventTouch.nX = 0; // Unused
-          sEventTouch.nY = nActionVal;
-        } else {
-          sEventTouch.eTouch = GSLC_TOUCH_SET_ABS;
-          sEventTouch.nX = 0; // Unused
-          sEventTouch.nY = nActionVal;
-        }
-
-        sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pFocusPage,pvData);
-        gslc_PageEvent(pGui,sEvent);
-      }
       break;
 
     case GSLC_ACTION_UNDEF:
@@ -4100,6 +4950,7 @@ void gslc_TrackInput(gslc_tsGui* pGui,gslc_tsPage* pPage,gslc_teInputRawEvent eI
 // FIXME: pPage UNUSED with new PageStack implementation
 void gslc_TrackTouch(gslc_tsGui* pGui,gslc_tsPage* pPage,int16_t nX,int16_t nY,uint16_t nPress)
 {
+  (void)pPage; // Unused
   if (pGui == NULL) {
     static const char GSLC_PMEM FUNCSTR[] = "TrackTouch";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -4170,6 +5021,8 @@ void gslc_TrackTouch(gslc_tsGui* pGui,gslc_tsPage* pPage,int16_t nX,int16_t nY,u
       if (pGui->abPageStackActive[nStack]) {
         sEvent = gslc_EventCreate(pGui, GSLC_EVT_TOUCH, 0, (void*)pStackPage, pvData);
         gslc_PageEvent(pGui, sEvent);
+        // FIXME: Should we be aborting this loop upon finding the
+        // first page / element that accepts the hit?
       }
     }
   }
@@ -4264,6 +5117,17 @@ void gslc_SetTouchRemapCal(gslc_tsGui* pGui,uint16_t nXMin, uint16_t nXMax, uint
   pGui->nTouchCalXMax = nXMax;
   pGui->nTouchCalYMin = nYMin;
   pGui->nTouchCalYMax = nYMax;
+}
+
+void gslc_SetTouchPressCal(gslc_tsGui* pGui,uint16_t nPressMin, uint16_t nPressMax)
+{
+  if (pGui == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "SetTouchPressCal";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL, FUNCSTR);
+    return;
+  }
+  pGui->nTouchCalPressMin = nPressMin;
+  pGui->nTouchCalPressMax = nPressMax;
 }
 
 void gslc_SetTouchRemapYX(gslc_tsGui* pGui, bool bSwap)
@@ -4423,6 +5287,10 @@ bool gslc_CollectEvent(void* pvGui,gslc_tsEvent sEvent)
   unsigned        nInd;
   gslc_tsElemRef* pElemRef = NULL;
 
+  if (pCollect == NULL) {
+    return false; //xxx
+  }
+
   // Handle any collection-based events first
   // ...
   if (sEvent.eType == GSLC_EVT_TOUCH) {
@@ -4436,6 +5304,10 @@ bool gslc_CollectEvent(void* pvGui,gslc_tsEvent sEvent)
     // in the collection that should receive the event
     gslc_tsEventTouch*  pEventTouch = (gslc_tsEventTouch*)(pvData);
     gslc_teTouch        eTouch      = pEventTouch->eTouch;
+
+    if (pvData == NULL) {
+      return false;
+    }
 
     if ((eTouch & GSLC_TOUCH_TYPE_MASK) == GSLC_TOUCH_COORD) {
       gslc_CollectTouch(pGui,pCollect,pEventTouch);
@@ -4637,6 +5509,10 @@ gslc_tsElemRef* gslc_ElemAdd(gslc_tsGui* pGui,int16_t nPageId,gslc_tsElem* pElem
   gslc_tsCollect* pCollect = &pPage->sCollect;
   gslc_tsElemRef* pElemRefAdd = gslc_CollectElemAdd(pGui,pCollect,pElem,eFlags);
 
+  // Determine any change in sizing and update the element
+  int8_t nResizeNew = gslc_ElemCalcResizeForFocus(pGui,pElemRefAdd);
+  gslc_ElemGrowRect(pGui,pElemRefAdd,(nResizeNew-0));
+
   // Fetch access to the element from the reference
   // - This also handles the case with elements in FLASH
   gslc_tsElem* pElemLocal = NULL;
@@ -4646,6 +5522,12 @@ gslc_tsElemRef* gslc_ElemAdd(gslc_tsGui* pGui,int16_t nPageId,gslc_tsElem* pElem
   gslc_UnionRect(&(pPage->rBounds), pElemLocal->rElem);
 
   return pElemRefAdd;
+}
+
+gslc_tsRect gslc_GetClipRect(gslc_tsGui* pGui)
+{
+  gslc_tsDriver* pDriver = (gslc_tsDriver*)(pGui->pvDriver);
+  return pDriver->rClipRect;
 }
 
 bool gslc_SetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
@@ -4660,6 +5542,18 @@ bool gslc_SetClipRect(gslc_tsGui* pGui,gslc_tsRect* pRect)
   }
 }
 
+// Determine if an image has changed
+// - This could be useful to detect whether an image button
+//   needs to be redrawn.
+bool gslc_ImgRefEqual(gslc_tsImgRef* pImgRef1,gslc_tsImgRef* pImgRef2)
+{
+  bool bSame = true;
+  if (pImgRef1->pImgBuf != pImgRef2->pImgBuf) { bSame = false; }
+  if (strcmp(pImgRef1->pFname,pImgRef2->pFname)!=0) { bSame = false; }
+  if (pImgRef1->eImgFlags != pImgRef2->eImgFlags) { bSame = false; }
+  if (pImgRef1->pvImgRaw != pImgRef2->pvImgRaw) { bSame = false; }
+  return bSame;
+}
 
 void gslc_ElemSetImage(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsImgRef sImgRef,
   gslc_tsImgRef sImgRefSel)
@@ -4667,12 +5561,25 @@ void gslc_ElemSetImage(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,gslc_tsImgRef s
   gslc_tsElem* pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
   if (!pElem) return;
 
+  // Determine if a redraw will be needed
+  #if (1) // Disable check for now
+    // Always perform a redraw
+    bool bImagesEqual = false;
+  #else
+    // Detect to see if a redraw is needed
+    bool bImagesEqual = true;
+    bImagesEqual &= gslc_ImgRefEqual(&(pElem->sImgRefNorm),&sImgRef);
+    bImagesEqual &= gslc_ImgRefEqual(&(pElem->sImgRefGlow),&sImgRefSel);
+  #endif
+  
   // Update the normal and glowing images
   gslc_DrvSetElemImageNorm(pGui,pElem,sImgRef);
   gslc_DrvSetElemImageGlow(pGui,pElem,sImgRefSel);
 
-  // Mark as needing redraw
-  gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_FULL);
+  // Mark as needing redraw only if the image has changed
+  if (!bImagesEqual) {
+    gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_FULL);
+  }
 }
 
 bool gslc_SetBkgndImage(gslc_tsGui* pGui,gslc_tsImgRef sImgRef)
@@ -4680,6 +5587,7 @@ bool gslc_SetBkgndImage(gslc_tsGui* pGui,gslc_tsImgRef sImgRef)
   if (!gslc_DrvSetBkgndImage(pGui,sImgRef)) {
     return false;
   }
+  gslc_InvalidateRgnScreen(pGui);
   gslc_PageFlipSet(pGui,true);
   return true;
 }
@@ -4689,6 +5597,7 @@ bool gslc_SetBkgndColor(gslc_tsGui* pGui,gslc_tsColor nCol)
   if (!gslc_DrvSetBkgndColor(pGui,nCol)) {
     return false;
   }
+  gslc_InvalidateRgnScreen(pGui);
   gslc_PageFlipSet(pGui,true);
   return true;
 }
@@ -4711,6 +5620,8 @@ bool gslc_GuiRotate(gslc_tsGui* pGui, uint8_t nRotation)
 }
 
 // Trigger a touch event on an element
+// - These events are put into the deferred state to be caught on the next update loop
+// - If there is already a deferred event waiting, then it is issued immediately.
 bool gslc_ElemSendEventTouch(gslc_tsGui* pGui,gslc_tsElemRef* pElemRefTracked,
         gslc_teTouch eTouch,int16_t nX,int16_t nY)
 {
@@ -4718,12 +5629,24 @@ bool gslc_ElemSendEventTouch(gslc_tsGui* pGui,gslc_tsElemRef* pElemRefTracked,
   return false;
 #else
 
-  gslc_tsEventTouch sEventTouch;
-  sEventTouch.eTouch        = eTouch;
-  sEventTouch.nX            = nX;
-  sEventTouch.nY            = nY;
-  gslc_tsEvent sEvent = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pElemRefTracked,&sEventTouch);
-  gslc_ElemEvent((void*)pGui,sEvent);
+  if (pElemRefTracked == NULL) {
+    return false; //FIXME: Need to add this check!
+  }
+
+  // Check to see if the deferred event queue is available
+  if (pGui->bEventPending) {
+    // If the pending slot already has an event, then
+    // service it now and then save the new event into
+    // the pending slot.
+    gslc_ElemEvent((void*)pGui,pGui->sEventPend);
+  }
+  // Now we can save the new event into the pending slot
+  pGui->sEventTouchPend.eTouch = eTouch;
+  pGui->sEventTouchPend.nX = nX;
+  pGui->sEventTouchPend.nY = nY;
+  pGui->sEventPend = gslc_EventCreate(pGui,GSLC_EVT_TOUCH,0,(void*)pElemRefTracked,&(pGui->sEventTouchPend));
+  pGui->bEventPending = true;
+
   return true;
 #endif // !DRV_TOUCH_NONE
 }
@@ -4928,80 +5851,7 @@ void gslc_CollectReset(gslc_tsCollect* pCollect,gslc_tsElem* asElem,uint16_t nEl
 
   // Reset touch / input tracking
   pCollect->pElemRefTracked = NULL;
-  pCollect->nElemIndFocused = GSLC_IND_NONE;
-}
-
-
-bool gslc_CollectFindFocusStep(gslc_tsGui* pGui,gslc_tsCollect* pCollect,bool bNext,bool* pbWrapped,int16_t* pnElemInd)
-{
-#if !(GSLC_FEATURE_INPUT)
-  return false;
-#else
-  gslc_tsElemRef*   pElemRef = NULL;
-  gslc_tsElem*      pElem = NULL;
-  int16_t           nIndStart;
-  bool              bFound = false;
-  unsigned          nElemIndCnt = pCollect->nElemRefCnt;
-  int16_t           nIndStep;
-  int16_t           nInd;
-  int16_t           nIndFocus = GSLC_IND_NONE;
-  bool              bCanFocus;
-
-  *pbWrapped = false;
-  *pnElemInd = GSLC_IND_NONE;
-
-  nIndFocus = gslc_CollectGetFocus(pGui, pCollect);
-  if (nIndFocus == GSLC_IND_NONE) {
-    nIndStart = (bNext) ? 0 : (nElemIndCnt - 1);
-  } else {
-    nIndStart = (bNext) ? (nIndFocus + 1) : (nIndFocus - 1);
-  }
-
-  for (nIndStep=0;((!bFound)&&(nIndStep<nElemIndCnt));nIndStep++) {
-    if (bNext) {
-      nInd = nIndStep + nIndStart;
-      // Detect wrap
-      if (nInd >= nElemIndCnt) {
-        *pbWrapped = true;
-        nInd -= nElemIndCnt;
-      }
-    } else {
-      nInd = nIndStart - nIndStep;
-      // Detect wrap
-      if (nInd < 0) {
-        *pbWrapped = true;
-        nInd += nElemIndCnt;
-      }
-    }
-
-    // Get focus capability attribute
-    bCanFocus = false;
-    pElemRef = &(pCollect->asElemRef[nInd]);
-    pElem = gslc_GetElemFromRefD(pGui, pElemRef, __LINE__);
-    if (pElemRef->eElemFlags != GSLC_ELEMREF_NONE) {
-      if (pElem == NULL) {
-        GSLC_DEBUG2_PRINT("ERROR: eElemFlags not none, but pElem is NULL%s\n","");
-        exit(1); // FATAL
-      } else {
-        // Check the "click enable" flag
-        if (pElem->nFeatures & GSLC_ELEM_FEA_CLICK_EN) {
-          bCanFocus = true;
-        }
-      }
-    }
-
-
-    if (bCanFocus) {
-      bFound = true;
-    }
-  }
-
-  if (bFound) {
-    *pnElemInd = nInd;
-  }
-
-  return bFound;
-#endif // GSLC_FEATURE_INPUT
+  pCollect->nElemIndTracked = GSLC_IND_NONE;
 }
 
 
@@ -5041,6 +5891,7 @@ gslc_tsElemRef* gslc_CollectFindElemById(gslc_tsGui* pGui,gslc_tsCollect* pColle
 
 int gslc_CollectGetNextId(gslc_tsGui* pGui,gslc_tsCollect* pCollect)
 {
+  (void)pGui; // Unused
   int16_t nElemId = pCollect->nElemAutoIdNext;
   pCollect->nElemAutoIdNext++;
   return nElemId;
@@ -5048,24 +5899,31 @@ int gslc_CollectGetNextId(gslc_tsGui* pGui,gslc_tsCollect* pCollect)
 
 gslc_tsElemRef* gslc_CollectGetElemRefTracked(gslc_tsGui* pGui,gslc_tsCollect* pCollect)
 {
+  (void)pGui; // Unused
   return pCollect->pElemRefTracked;
 }
 
-void gslc_CollectSetElemTracked(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsElemRef* pElemRef)
+void gslc_CollectSetElemTracked(gslc_tsGui* pGui,gslc_tsCollect* pCollect,gslc_tsElemRef* pElemRef,int16_t nElemInd)
 {
+  (void)pGui; // Unused
   pCollect->pElemRefTracked = pElemRef;
+  pCollect->nElemIndTracked = nElemInd;
 }
 
 // Find an element index in a collection from a coordinate
 // - Note that the search is in decreasing Z-order (ie. front to back)
 //   so that we effectively find the top-most element that should
 //   receive an event.
-gslc_tsElemRef* gslc_CollectFindElemFromCoord(gslc_tsGui* pGui,gslc_tsCollect* pCollect,int16_t nX, int16_t nY)
+// - Also returns the element index in the collection
+gslc_tsElemRef* gslc_CollectFindElemFromCoord(gslc_tsGui* pGui,gslc_tsCollect* pCollect,int16_t nX, int16_t nY, int16_t* pnElemInd)
 {
   int16_t               nInd;
   bool                  bFound = false;
   gslc_tsElemRef*       pElemRef = NULL;
   gslc_tsElemRef*       pFoundElemRef = NULL;
+
+  // Reset element index
+  *pnElemInd = GSLC_IND_NONE;
 
   if (pCollect->nElemRefCnt == 0) { return NULL; }
   for (nInd=pCollect->nElemRefCnt-1;nInd>=0;nInd--) {
@@ -5079,23 +5937,13 @@ gslc_tsElemRef* gslc_CollectFindElemFromCoord(gslc_tsGui* pGui,gslc_tsCollect* p
     bFound = gslc_ElemOwnsCoord(pGui,pElemRef,nX,nY,true);
     if (bFound) {
       pFoundElemRef = pElemRef;
+      *pnElemInd = nInd;
       // Stop searching
       break;
     }
   }
    // Return pointer or NULL if none found
   return pFoundElemRef;
-}
-
-
-int16_t gslc_CollectGetFocus(gslc_tsGui* pGui,gslc_tsCollect* pCollect)
-{
-  return pCollect->nElemIndFocused;
-}
-
-void gslc_CollectSetFocus(gslc_tsGui* pGui, gslc_tsCollect* pCollect, int16_t nElemInd)
-{
-  pCollect->nElemIndFocused = nElemInd;
 }
 
 
@@ -5143,7 +5991,29 @@ void gslc_CollectSetEventFunc(gslc_tsGui* pGui,gslc_tsCollect* pCollect,GSLC_CB_
 // - At this point in time, the LUT is only used by GUIslice for sin/cos
 //   in supporting the XRadial controls
 // - The LUT consumes approx 514 bytes of FLASH memory. FIXME: Ensure in FLASH!
-uint16_t  m_nLUTSinF0X16[257] = {
+#if defined(LUT_SIN_64)
+// Reduced-precision (64-entry LUT) for reduced memory footprint (130 Bytes)
+const uint16_t  m_nLUTSinF0X16[65] = {
+  0x0000,0x0648,0x0C8F,0x12D5,
+  0x1917,0x1F56,0x258F,0x2BC3,
+  0x31F1,0x3816,0x3E33,0x4447,
+  0x4A4F,0x504D,0x563E,0x5C21,
+  0x61F7,0x67BD,0x6D73,0x7319,
+  0x78AC,0x7E2E,0x839B,0x88F5,
+  0x8E39,0x9367,0x987F,0x9D7F,
+  0xA266,0xA735,0xABEA,0xB085,
+  0xB504,0xB967,0xBDAE,0xC1D7,
+  0xC5E3,0xC9D0,0xCD9E,0xD14C,
+  0xD4DA,0xD847,0xDB93,0xDEBD,
+  0xE1C4,0xE4A9,0xE76A,0xEA08,
+  0xEC82,0xEED7,0xF108,0xF313,
+  0xF4F9,0xF6B9,0xF853,0xF9C6,
+  0xFB13,0xFC3A,0xFD39,0xFE12,
+  0xFEC3,0xFF4D,0xFFB0,0xFFEB,
+  0xFFFF,
+};
+#else
+const uint16_t  m_nLUTSinF0X16[257] = {
   0x0000,0x0192,0x0324,0x04B6,0x0648,0x07DA,0x096C,0x0AFD,0x0C8F,0x0E21,0x0FB2,0x1143,0x12D5,0x1465,0x15F6,0x1787,
   0x1917,0x1AA7,0x1C37,0x1DC6,0x1F56,0x20E5,0x2273,0x2402,0x258F,0x271D,0x28AA,0x2A37,0x2BC3,0x2D4F,0x2EDB,0x3066,
   0x31F1,0x337B,0x3505,0x368E,0x3816,0x399E,0x3B26,0x3CAD,0x3E33,0x3FB9,0x413E,0x42C3,0x4447,0x45CA,0x474C,0x48CE,
@@ -5162,3 +6032,4 @@ uint16_t  m_nLUTSinF0X16[257] = {
   0xFEC3,0xFEE9,0xFF0D,0xFF2E,0xFF4D,0xFF69,0xFF83,0xFF9B,0xFFB0,0xFFC2,0xFFD2,0xFFE0,0xFFEB,0xFFF3,0xFFFA,0xFFFD,
   0xFFFF,
 };
+#endif // LUT_SIN_*

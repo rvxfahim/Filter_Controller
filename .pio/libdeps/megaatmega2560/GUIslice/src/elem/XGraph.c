@@ -108,7 +108,7 @@ gslc_tsElemRef* gslc_ElemXGraphCreate(gslc_tsGui* pGui,int16_t nElemId,int16_t n
   // - Data value is directly mapped to height in Y direction
   pXData->nPlotValMin   = 0;
   pXData->nPlotValMax   = pXData->nWndHeight;
-  pXData->nPlotIndMax    = pXData->nWndWidth;
+  pXData->nPlotIndMax   = pXData->nWndWidth;
 
 
   // Clear the buffer
@@ -279,7 +279,7 @@ bool gslc_ElemXGraphDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
 
   int16_t           nDataVal;
   uint16_t          nCurX = 0;
-  int16_t           nPixX,nPixY,nPixYBase,nPixYOffset;
+  uint16_t          nPixX,nPixY,nPixYBase,nPixYOffset;
   gslc_tsColor      colGraph;
 
   uint16_t          nScrollMax;
@@ -337,16 +337,13 @@ bool gslc_ElemXGraphDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
     nPixX       = pElem->rElem.x + pBox->nMargin + nCurX;
     nPixYBase   = pElem->rElem.y - pBox->nMargin + pElem->rElem.h-1;
 
-    // Calculate Y coordinate
-    nPixYOffset = nDataVal;
-
-    // Clip plot Y coordinate
-    if (nPixY > pBox->nWndHeight) { nPixY = pBox->nWndHeight; }
-    if (nPixY < 0)                { nPixY = 0;                }
+    // Calculate Y value
+    nPixYOffset = (nDataVal >= 0)? nDataVal : 0;
+    // Clip plot Y value
+    if (nPixYOffset > pBox->nWndHeight) { nPixYOffset = pBox->nWndHeight; }
 
     // Calculate final Y coordinate
-    nPixY       = pElem->rElem.y - pBox->nMargin + pElem->rElem.h-1 - nPixYOffset;
-
+    nPixY       = nPixYBase - nPixYOffset;
 
     // Render the datapoints
     if (pBox->eStyle == GSLCX_GRAPH_STYLE_DOT) {

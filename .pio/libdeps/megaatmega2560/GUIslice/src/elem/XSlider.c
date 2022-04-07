@@ -90,6 +90,8 @@ gslc_tsElemRef* gslc_ElemXSliderCreate(gslc_tsGui* pGui,int16_t nElemId,int16_t 
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_EDIT_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
 
   sElem.nGroup            = GSLC_GROUP_ID_NONE;
 
@@ -153,6 +155,20 @@ void gslc_ElemXSliderSetStyle(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,
   // Update
   gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
 }
+
+void gslc_ElemXSliderSetSnapEn(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,bool bSnapEn)
+{
+  if (pElemRef == NULL) {
+    static const char GSLC_PMEM FUNCSTR[] = "ElemXSliderSetSnapEn";
+    GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
+    return;
+  }
+  gslc_tsElem*    pElem = gslc_GetElemFromRef(pGui,pElemRef);
+  gslc_tsXSlider* pSlider = (gslc_tsXSlider*)(pElem->pXData);
+
+  pSlider->bSnapEn = bSnapEn;
+}
+
 
 int gslc_ElemXSliderGetPos(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef)
 {
@@ -220,6 +236,7 @@ void gslc_ElemXSliderSetPosFunc(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef,GSLC_C
 //   simpler callback function definition & scalability.
 bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
 {
+  (void)eRedraw; // Unused
   if ((pvGui == NULL) || (pvElemRef == NULL)) {
     static const char GSLC_PMEM FUNCSTR[] = "ElemXSliderDraw";
     GSLC_DEBUG2_PRINT_CONST(ERRSTR_NULL,FUNCSTR);
@@ -238,7 +255,6 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
     return false;
   }
 
-  bool            bGlow     = (pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN) && gslc_ElemGetGlow(pGui,pElemRef);
   int16_t         nPos      = pSlider->nPos;
   int16_t         nPosMin   = pSlider->nPosMin;
   int16_t         nPosMax   = pSlider->nPosMax;
@@ -250,15 +266,22 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
   int16_t         nTickLen  = pSlider->nTickLen;
   gslc_tsColor    colTick   = pSlider->colTick;
 
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
+
   // Range check on nPos
   if (nPos < nPosMin) { nPos = nPosMin; }
   else if (nPos > nPosMax) { nPos = nPosMax; }
 
+  // We use an "inner" region for the drawing to allow
+  // for the inclusion of a frame. (not expected to be used)
+
   int16_t nX0,nY0,nX1,nY1,nXMid,nYMid;
-  nX0 = pElem->rElem.x;
-  nY0 = pElem->rElem.y;
-  nX1 = pElem->rElem.x + pElem->rElem.w - 1;
-  nY1 = pElem->rElem.y + pElem->rElem.h - 1;
+  nX0 = sState.rInner.x;
+  nY0 = sState.rInner.y;
+  nX1 = sState.rInner.x + sState.rInner.w - 1;
+  nY1 = sState.rInner.y + sState.rInner.h - 1;
   nXMid = (nX0+nX1)/2;
   nYMid = (nY0+nY1)/2;
 
@@ -285,7 +308,10 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
   //         then redraw other portions. This would prevent the
   //         track / ticks from flickering needlessly. A full redraw would
   //         be required if it was first draw action.
-  gslc_DrawFillRect(pGui,pElem->rElem,(bGlow)?pElem->colElemFillGlow:pElem->colElemFill);
+
+  // Note that we are using colBack instead of colInner since we
+  // don't want to transition to a glow state
+  gslc_DrawFillRect(pGui,sState.rFull,sState.colBack);
 
   // Draw any ticks
   // - Need at least one tick segment
@@ -308,8 +334,7 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
   // Draw the track
   if (!bVert) {
     // Make the track highlight during glow
-    gslc_DrawLine(pGui,nX0+nMargin,nYMid,nX1-nMargin,nYMid,
-            bGlow? pElem->colElemFrameGlow : pElem->colElemFrame);
+    gslc_DrawLine(pGui,nX0+nMargin,nYMid,nX1-nMargin,nYMid,sState.colFrm);
     // Optionally draw a trim line
     if (bTrim) {
       gslc_DrawLine(pGui,nX0+nMargin,nYMid+1,nX1-nMargin,nYMid+1,colTrim);
@@ -317,8 +342,7 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
 
   } else {
     // Make the track highlight during glow
-    gslc_DrawLine(pGui,nXMid,nY0+nMargin,nXMid,nY1-nMargin,
-            bGlow? pElem->colElemFrameGlow : pElem->colElemFrame);
+    gslc_DrawLine(pGui,nXMid,nY0+nMargin,nXMid,nY1-nMargin,sState.colFrm);
     // Optionally draw a trim line
     if (bTrim) {
       gslc_DrawLine(pGui,nXMid+1,nY0+nMargin,nXMid+1,nY1-nMargin,colTrim);
@@ -341,8 +365,8 @@ bool gslc_ElemXSliderDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw)
   rThumb.h  = 2*nThumbSz;
 
   // Draw the thumb control
-  gslc_DrawFillRect(pGui,rThumb,(bGlow)?pElem->colElemFillGlow:pElem->colElemFill);
-  gslc_DrawFrameRect(pGui,rThumb,(bGlow)?pElem->colElemFrameGlow:pElem->colElemFrame);
+  gslc_DrawFillRect(pGui,rThumb,sState.colInner);
+  gslc_DrawFrameRect(pGui,rThumb,sState.colFrm);
   if (bTrim) {
     gslc_tsRect  rThumbTrim;
     rThumbTrim = gslc_ExpandRect(rThumb,-1,-1);
@@ -384,7 +408,11 @@ bool gslc_ElemXSliderTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int16
   pElem     = gslc_GetElemFromRef(pGui,pElemRef);
   pSlider   = (gslc_tsXSlider*)(pElem->pXData);
 
+  gslc_tsRect rElemInner = pElem->rElem;
+  rElemInner = gslc_ExpandRect(rElemInner,-1,-1);
+
   bool    bGlowingOld = gslc_ElemGetGlow(pGui,pElemRef);
+  bool    bEditingOld = gslc_ElemGetEdit(pGui,pElemRef);
   int16_t nPosRng;
   int16_t nPos = 0;
   bool    bUpdatePos = false;
@@ -416,10 +444,13 @@ bool gslc_ElemXSliderTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int16
       gslc_ElemSetGlow(pGui,pElemRef,false);
       break;
 
+    case GSLC_TOUCH_FOCUS_SELECT:
+      gslc_ElemSetEdit(pGui,pElemRef,!bEditingOld);
+      break;
+
     case GSLC_TOUCH_SET_REL:
     case GSLC_TOUCH_SET_ABS:
       bIndexed = true;
-      gslc_ElemSetGlow(pGui,pElemRef,true);
       bUpdatePos = true;
       break;
 
@@ -458,11 +489,24 @@ bool gslc_ElemXSliderTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int16
       nRelX = (nRelX < 0)? 0 : nRelX;
       nRelY = (nRelY < 0)? 0 : nRelY;
 
+      // Only support touch snap functionality if enabled
+      // and tick divisions have been set.
+      bool bDoSnap = pSlider->bSnapEn && (pSlider->nTickDiv > 0);
+      int32_t nTickSz = 0;
+
       // Calc new position
       nPosRng = pSlider->nPosMax - pSlider->nPosMin;
       if (!pSlider->bVert) {
+        if (bDoSnap) {
+          nTickSz = (int32_t)pElem->rElem.w / (int32_t)pSlider->nTickDiv;
+          nRelX = nTickSz * (int32_t)( (nRelX + (nTickSz/2) ) / nTickSz ); 
+        }
         nPos = (int16_t)((int32_t)nRelX * (int32_t)nPosRng / (int32_t)pElem->rElem.w) + pSlider->nPosMin;
       } else {
+        if (bDoSnap) {
+          nTickSz = (int32_t)pElem->rElem.h / (int32_t)pSlider->nTickDiv;
+          nRelY = nTickSz * (int32_t)( (nRelY + (nTickSz/2) ) / nTickSz ); 
+        }
         nPos = (int16_t)((int32_t)nRelY * (int32_t)nPosRng / (int32_t)pElem->rElem.h) + pSlider->nPosMin;
       }
     }
@@ -471,7 +515,8 @@ bool gslc_ElemXSliderTouch(void* pvGui,void* pvElemRef,gslc_teTouch eTouch,int16
   }
 
   // If the slider changed state, redraw
-  if (gslc_ElemGetGlow(pGui,pElemRef) != bGlowingOld) {
+  if ((gslc_ElemGetGlow(pGui,pElemRef) != bGlowingOld) ||
+      (gslc_ElemGetEdit(pGui,pElemRef) != bEditingOld)) {
     gslc_ElemSetRedraw(pGui,pElemRef,GSLC_REDRAW_FULL);
   }
 

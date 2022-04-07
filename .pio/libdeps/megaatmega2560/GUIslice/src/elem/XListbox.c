@@ -107,7 +107,7 @@ char* gslc_ElemXListboxGetItemAddr(gslc_tsXListbox* pListbox, int16_t nItemCurSe
 {
   char*      pBuf = NULL;
   uint16_t   nBufPos = 0;
-  uint16_t   nItemInd = 0;
+  int16_t    nItemInd = 0;
   bool       bFound = false;
   while (1) {
     if (nItemInd == nItemCurSel) {
@@ -305,7 +305,7 @@ bool gslc_ElemXListboxInsertItemAt(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, u
   uint16_t    nBufItemsPos = pListbox->nBufItemsPos;
   uint16_t    nBufItemsMax = pListbox->nBufItemsMax;
 
-  if (nInsertPos > pListbox->nItemCnt) {
+  if ((int16_t)nInsertPos > pListbox->nItemCnt) {
     GSLC_DEBUG2_PRINT("ERROR: ElemXListboxInsertItemAt() Current Count: %d Invalid Position %d\n", 
       pListbox->nItemCnt,nInsertPos);
     return false;
@@ -340,7 +340,7 @@ bool gslc_ElemXListboxInsertItemAt(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, u
   // Make a hole in the buffer to slot in the new item
   char* pSrc = (char*)pListbox->pBufItems+nBufItemsPos-1;
   char* pDest = pSrc+nStrItemLen+1;  
-  int16_t nMoveLen = (int16_t)(pSrc - pBuf)+1;
+  uint16_t nMoveLen = (int16_t)(pSrc - pBuf)+1;
   uint8_t ch;
   for (uint16_t nInd = 0; nInd < nMoveLen; nInd++) {
     ch = *pSrc;
@@ -391,7 +391,7 @@ bool gslc_ElemXListboxDeleteItemAt(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, u
   char* pSrc  = (char*)pBuf+nStrItemLen+1;
   char* pDest = (char*)pBuf;
   char* pEndOfBuf = (char*)(pListbox->pBufItems+nBufItemsPos);
-  int16_t nMoveLen = (int16_t)(pEndOfBuf-pSrc)+1;
+  uint16_t nMoveLen = (int16_t)(pEndOfBuf-pSrc)+1;
   uint8_t ch;
   if (nMoveLen > 1) {
     for (uint16_t nInd = 0; nInd < nMoveLen; nInd++) {
@@ -433,7 +433,7 @@ bool gslc_ElemXListboxGetItem(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, int16_
     return false;
   }
   uint16_t   nBufPos = 0;
-  uint16_t   nItemInd = 0;
+  int16_t   nItemInd = 0;
   uint8_t*   pBuf = NULL;
   bool       bFound = false;
   while (1) {
@@ -488,6 +488,8 @@ gslc_tsElemRef* gslc_ElemXListboxCreate(gslc_tsGui* pGui,int16_t nElemId,int16_t
   sElem.nFeatures        |= GSLC_ELEM_FEA_FILL_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_CLICK_EN;
   sElem.nFeatures        |= GSLC_ELEM_FEA_GLOW_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_EDIT_EN;
+  sElem.nFeatures        |= GSLC_ELEM_FEA_FOCUS_EN;
 
   sElem.nGroup            = GSLC_GROUP_ID_NONE;
   pXData->pBufItems       = pBufItems;
@@ -511,6 +513,8 @@ gslc_tsElemRef* gslc_ElemXListboxCreate(gslc_tsGui* pGui,int16_t nElemId,int16_t
   pXData->nItemGap        = 2;
   pXData->colGap          = GSLC_COL_BLACK;
   pXData->nItemCurSelLast = XLISTBOX_SEL_NONE;
+  pXData->bGlowLast       = false;
+  pXData->bFocusLast      = false;
   sElem.pXData            = (void*)(pXData);
   // Specify the custom drawing callback
   sElem.pfuncXDraw        = &gslc_ElemXListboxDraw;
@@ -557,37 +561,47 @@ bool gslc_ElemXListboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw
 
   gslc_tsElem*      pElem = gslc_GetElemFromRef(pGui,pElemRef);
 
-  //bool            bGlow     = (pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN) && gslc_ElemGetGlow(pGui,pElemRef);
-  int8_t          nItemCurSel  = pListbox->nItemCurSel;
+  bool            bFrameEn     = (pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN);
+  bool            bGlow        = (pElem->nFeatures & GSLC_ELEM_FEA_GLOW_EN) && gslc_ElemGetGlow(pGui,pElemRef);
+  bool            bGlowLast    = pListbox->bGlowLast;  
+  bool            bFocus       = (pElem->nFeatures & GSLC_ELEM_FEA_FOCUS_EN) && gslc_ElemGetFocus(pGui,pElemRef);
+  bool            bFocusLast   = pListbox->bFocusLast;
+  int16_t         nItemCurSel  = pListbox->nItemCurSel;
 
+  // Determine the regions and colors based on element state
+  gslc_tsRectState sState;
+  gslc_ElemCalcRectState(pGui,pElemRef,&sState);
 
-  gslc_tsRect rElemRect;
-  if (pElem->nFeatures & GSLC_ELEM_FEA_FRAME_EN) {
-    rElemRect = gslc_ExpandRect(pElem->rElem, -1, -1);
-    if (eRedraw == GSLC_REDRAW_FULL) {
-      gslc_DrawFrameRect(pGui, pElem->rElem, pElem->colElemFrame);
+  if (bFrameEn) {
+    bool bDrawFrame = false;
+    if (eRedraw == GSLC_REDRAW_FULL) { bDrawFrame = true; }
+    if (bGlowLast != bGlow) { bDrawFrame = true; }
+    if (bFocusLast != bFocus) { bDrawFrame = true; }
+    if (bDrawFrame) {
+      gslc_DrawFrameRect(pGui, sState.rFull, sState.colFrm);
     }
-  } else {
-    rElemRect = pElem->rElem;
   }
+
+  // Update last state
+  pListbox->bGlowLast = bGlow;
+  pListbox->bFocusLast = bFocus;
 
   // If full redraw and gap is enabled:
   // - Clear background with gap color, as list items
   //   will be overdrawn in colBg color
   if (eRedraw == GSLC_REDRAW_FULL) {
     if (pListbox->nItemGap > 0) {
-      gslc_DrawFillRect(pGui, rElemRect, pListbox->colGap);
+      gslc_DrawFillRect(pGui, sState.rInner, pListbox->colGap);
     }
   }
 
   // Determine if we need to recalculate the item sizing
   if (pListbox->bNeedRecalc) {
-    gslc_ElemXListboxRecalcSize(pListbox, rElemRect);
+    gslc_ElemXListboxRecalcSize(pListbox, sState.rInner);
   }
 
-  int16_t nX0, nY0;
-  nX0 = rElemRect.x;
-  nY0 = rElemRect.y;
+  int16_t nX0 = sState.rInner.x;
+  int16_t nY0 = sState.rInner.y;
 
   int8_t        nRows = pListbox->nRows;
   int8_t        nCols = pListbox->nCols;
@@ -610,17 +624,17 @@ bool gslc_ElemXListboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw
 
 
   // Loop through the items in the list
-  int8_t nItemTop = pListbox->nItemTop;
-  int8_t nItemCnt = pListbox->nItemCnt;
-  int8_t nItemInd;
+  int16_t nItemTop = pListbox->nItemTop;
+  int16_t nItemCnt = pListbox->nItemCnt;
+  int16_t nItemInd;
 
   // Note that nItemTop is always pointing to an
   // item index at the start of a row
 
   // Determine the list indices to display in the visible window due to scrolling
-  int8_t nDispIndMax = (nRows * nCols);
+  int16_t nDispIndMax = (nRows * nCols);
 
-  for (int8_t nDispInd = 0; nDispInd < nDispIndMax; nDispInd++) {
+  for (int16_t nDispInd = 0; nDispInd < nDispIndMax; nDispInd++) {
 
     // Calculate the item index based on the display index
     nItemInd = nItemTop + nDispInd;
@@ -637,7 +651,7 @@ bool gslc_ElemXListboxDraw(void* pvGui,void* pvElemRef,gslc_teRedrawType eRedraw
       break;
     }
 
-    int8_t    nItemIndX, nItemIndY;
+    int16_t   nItemIndX, nItemIndY;
     int16_t   nItemOuterW, nItemOuterH;
 
     // Convert linear count into row & column
@@ -720,6 +734,7 @@ bool gslc_ElemXListboxTouch(void* pvGui, void* pvElemRef, gslc_teTouch eTouch, i
   if (!pListbox) return false;
 
   //bool    bGlowingOld = gslc_ElemGetGlow(pGui, pElemRef);
+  bool    bEditingOld = gslc_ElemGetEdit(pGui, pElemRef);
   bool    bIndexed = false;
 
   int16_t nItemSavedSel = pListbox->nItemSavedSel;
@@ -766,10 +781,13 @@ bool gslc_ElemXListboxTouch(void* pvGui, void* pvElemRef, gslc_teTouch eTouch, i
     bSelSave = true; // Save SEL_NONE
     break;
 
+  case GSLC_TOUCH_FOCUS_SELECT:
+    gslc_ElemSetEdit(pGui,pElemRef,!bEditingOld);
+    break;
+
   case GSLC_TOUCH_SET_REL:
   case GSLC_TOUCH_SET_ABS:
     bIndexed = true;
-    gslc_ElemSetGlow(pGui,pElemRef,true);
     // Keyboard / pin control
     bSelTrack = true;
     bSelSave = true;
@@ -780,8 +798,8 @@ bool gslc_ElemXListboxTouch(void* pvGui, void* pvElemRef, gslc_teTouch eTouch, i
     break;
   }
 
-  uint8_t nCols = pListbox->nCols;
-  uint8_t nRows = pListbox->nRows;
+  int8_t nCols = pListbox->nCols;
+  int8_t nRows = pListbox->nRows;
 
   // If we need to update the Listbox selection, calculate the value
   // and perform the update
@@ -791,22 +809,33 @@ bool gslc_ElemXListboxTouch(void* pvGui, void* pvElemRef, gslc_teTouch eTouch, i
       // The selection is changed by direct control (eg. keyboard)
       // instead of touch coordinates
 
-
-      // FIXME: Change the following to be either absolute or relative
-      // value assignment instead of inc/dec. Then the user code can
-      // define what the magnitude and direction should be.
-
       if (eTouch == GSLC_TOUCH_SET_REL) {
-        // Overload the "nRelY" parameter as an increment value
-        nItemCurSel = nItemCurSelOld + nRelY;
+        // If nothing has been selected, force to select first entry
+        if (nItemCurSelOld == XLISTBOX_SEL_NONE) {
+          nItemCurSel = 0;
+        } else {
+          // Overload the "nRelY" parameter as an increment value
+          nItemCurSel = nItemCurSelOld + nRelY;
+        }
       }
       else if (eTouch == GSLC_TOUCH_SET_ABS) {
         // Overload the "nRelY" parameter as an absolute value
         nItemCurSel = nRelY;
       }
+
       gslc_ElemXListboxSetSel(pGui, pElemRef, nItemCurSel);
-    }
-    else {
+
+      // If any selection callback is defined, call it now
+      // - However, we need to read-back the value to account
+      //   for any validation (limit checking) performed
+      //   on the above increment/absolute value.
+      nItemCurSel = gslc_ElemXListboxGetSel(pGui,pElemRef);
+
+      // If any selection callback is defined, call it now
+      if (pListbox->pfuncXSel != NULL) {
+        (*pListbox->pfuncXSel)((void*)(pGui), (void*)(pElemRef), nItemCurSel);
+      }
+    } else {
       // Determine which item we are tracking
       int16_t nItemOuterW, nItemOuterH;
       int16_t nDispR, nDispC;
@@ -890,6 +919,10 @@ bool gslc_ElemXListboxTouch(void* pvGui, void* pvElemRef, gslc_teTouch eTouch, i
         gslc_ElemXListboxSetSel(pGui, pElemRef, nItemCurSel);
 
         // If any selection callback is defined, call it now
+        // - However, we need to read-back the value to account
+        //   for any validation (limit checking) performed
+        //   on the above increment/absolute value.
+        nItemCurSel = gslc_ElemXListboxGetSel(pGui,pElemRef);
         if (pListbox->pfuncXSel != NULL) {
           (*pListbox->pfuncXSel)((void*)(pGui), (void*)(pElemRef), nItemCurSel);
         }
@@ -931,6 +964,24 @@ bool gslc_ElemXListboxSetSel(gslc_tsGui* pGui,gslc_tsElemRef* pElemRef, int16_t 
   if (bOk) {
     pListbox->nItemCurSel = nItemCurSel;
     gslc_ElemSetRedraw(pGui, pElemRef, GSLC_REDRAW_INC);
+
+    // Now ensure that the selection is still visible,
+    // otherwise force a scroll
+    int16_t nItemTop = pListbox->nItemTop;
+    int16_t nRange   = pListbox->nRows * pListbox->nCols;
+
+    if (nItemCurSel == XLISTBOX_SEL_NONE) {
+    } else if (nItemCurSel < nItemTop) {
+      // Selected an element above the current view
+      // - Therefore, scroll to place it at the top
+      gslc_ElemXListboxSetScrollPos(pGui,pElemRef,nItemCurSel);
+
+    } else if (nItemCurSel >= (nItemTop + nRange)) {
+      // Selected an element below the current view
+      // - Therefore, scroll to place it at the bottom
+      gslc_ElemXListboxSetScrollPos(pGui,pElemRef,nItemCurSel+1-nRange);
+    }
+
   }
   return bOk;
 }
@@ -941,7 +992,7 @@ bool gslc_ElemXListboxSetScrollPos(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, u
   if (!pListbox) return false;
 
   bool bOk = false;
-  if (nScrollPos < pListbox->nItemCnt) {
+  if ((int16_t)nScrollPos < pListbox->nItemCnt) {
     bOk = true;
   }
 
@@ -949,7 +1000,7 @@ bool gslc_ElemXListboxSetScrollPos(gslc_tsGui* pGui, gslc_tsElemRef* pElemRef, u
   int16_t nItemCnt = pListbox->nItemCnt;
 
   // Error handling: in case position out of bounds
-  if (nScrollPos >= nItemCnt) {
+  if ((int16_t)nScrollPos >= nItemCnt) {
     nScrollPos = (nItemCnt > 0) ? nItemCnt - 1 : 0;
   }
 
