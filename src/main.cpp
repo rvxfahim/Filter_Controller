@@ -32,7 +32,8 @@ bool gap_t_flag=true;
 bool relay_text_updated=false;
 char              acTxt[4];
 unsigned long int t1, t2;
-
+bool once_off=false;
+bool once_on=false;
 void on_time() {
   uint8_t on_time_l = gslc_ElemXSpinnerGetCounter(&m_gui, &m_sXSpinner1);
   //Serial.println("On Time: " + String(on_time_l));
@@ -213,24 +214,32 @@ void loop()
   { 
     if(millis() - t1 > (on_time_global*1000))
     {
-      digitalWrite(relay, LOW);
-      gslc_ElemXCheckboxSetState(&m_gui, m_status, false);
-      //Serial.println("Relay: " + String(relay) + " OFF");
+      once_on=false;
+      while(once_off==false){
+        digitalWrite(relay, LOW);
+        gslc_ElemXCheckboxSetState(&m_gui, m_status, false);
+        Serial.println("Relay: " + String(relay) + " OFF");
+        once_off=true;
+      }
       float progress_percent = (millis() - t2);
       progress_percent = progress_percent/ (gap_time_global*1000);
       progress_percent=progress_percent*100;
-      //Serial.println("Progress: " + String(progress_percent) + "%");
+      Serial.println("Progress: " + String(100-progress_percent));
       gslc_ElemXProgressSetVal(&m_gui,m_pElemProgress1, int16_t(100-progress_percent));
     }
     else{
       t2 = millis();
-      digitalWrite(relay, HIGH);
-      gslc_ElemXCheckboxSetState(&m_gui, m_status, true);
-      //Serial.println("Relay: " + String(relay) + " ON");
+      once_off=false;
+      while(once_on==false){
+          digitalWrite(relay, HIGH);
+          gslc_ElemXCheckboxSetState(&m_gui, m_status, true);
+          Serial.println("Relay: " + String(relay) + " ON");
+          once_on=true;
+          }
       float progress_percent = (millis() - t1);
       progress_percent = progress_percent/ (on_time_global*1000);
       progress_percent=progress_percent*100;
-      //Serial.println("Progress: " + String(progress_percent) + "%");
+      Serial.println("Progress: " + String(progress_percent));
       gslc_ElemXProgressSetVal(&m_gui,m_pElemProgress1, int16_t(progress_percent));
     }
     if(millis() - t2 > (gap_time_global*1000))
