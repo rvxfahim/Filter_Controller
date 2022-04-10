@@ -38,24 +38,28 @@ void on_time() {
   uint8_t on_time_l = gslc_ElemXSpinnerGetCounter(&m_gui, &m_sXSpinner1);
   //Serial.println("On Time: " + String(on_time_l));
   on_time_global = on_time_l;
+  Serial.println("On time: " + String(on_time_global));
   EEPROM.update(0, on_time_l);
 }
 void gap_time() {
   uint8_t gap_time_l = gslc_ElemXSpinnerGetCounter(&m_gui, &m_sXSpinner2);
   //Serial.println("Gap Time: " + String(gap_time_l));
   gap_time_global=gap_time_l;
+   Serial.println("Gap time: " + String(gap_time_global));
   EEPROM.update(1, gap_time_l);
 }
 void start_switch() {
   if (gslc_ElemXTogglebtnGetState(&m_gui, m_pElemToggle1)) {
     //Serial.println("turned on");
     play_status_global = 1;
+    Serial.println("Play status: " + String(play_status_global));
     EEPROM.update(2, 1);
   }
   else
   {
     //Serial.println("turned off");
     play_status_global = 0;
+    Serial.println("Play status: " + String(play_status_global));
     EEPROM.update(2, 0);
   }
 }
@@ -150,7 +154,7 @@ void setup()
   // ------------------------------------------------
   // Initialize
   // ------------------------------------------------
-  Serial.begin(9600);
+  Serial.begin(115200);
   // Wait for USB Serial 
   //delay(1000);  // NOTE: Some devices require a delay after Serial.begin() before serial port can be used
   on_time_global     = EEPROM.read(0);
@@ -172,9 +176,12 @@ void setup()
   // set all pins to LOW
   for (int i = 22; i < 40; i++) {
     digitalWrite(i, LOW);
+    Serial.println("Relay: " + String(i) + " OFF");
   }
-  gslc_InitDebug(&DebugOut);
-
+  //gslc_InitDebug(&DebugOut);
+  Serial.println("On time: " + String(on_time_global));
+  Serial.println("Gap time: " + String(gap_time_global));
+  Serial.println("Play status: " + String(play_status_global));
   // ------------------------------------------------
   // Create graphic elements
   // ------------------------------------------------
@@ -213,8 +220,7 @@ void loop()
   if(play_status_global)
   { 
     if(millis() - t1 > (on_time_global*1000))
-    {
-      once_on=false;
+    { once_on=false;
       while(once_off==false){
         digitalWrite(relay, LOW);
         gslc_ElemXCheckboxSetState(&m_gui, m_status, false);
